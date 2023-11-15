@@ -1,0 +1,66 @@
+{% extends 'base.html' %}
+{% block title %}
+Sleety Homepage
+{% endblock %}
+
+{% block content %}
+<br>
+<br>
+<div class=" container">
+    <div class="row">
+      <div class="col">
+        <table class="table table-hover table-sm" style="width:100%">
+            <thead>
+                <tr>
+                    <th>Resort</th>
+                    <th>3 day Snowfall Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for resort, snowfall_total in three_day_sorted_snowfall_totals %}
+                <tr>
+                    <td style="font-weight: bold;">{{ resort }}</td>
+                    <td style="text-align: center;">{{ snowfall_total }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+      </div>
+      <div class="col">
+        <table class="table table-hover table-sm" style="width:100%">
+            <thead>
+                <tr>
+                    <th>Resort</th>
+                    <th>7 Day Snowfall Total</th>
+                </tr>
+            </thead>
+            <tbody>
+                {% for resort, snowfall_total in seven_day_sorted_snowfall_totals %}
+                <tr>
+                    <td >{{ resort }}</td>
+                    <td style="text-align: center;">{{ snowfall_total }}</td>
+                </tr>
+                {% endfor %}
+            </tbody>
+        </table>
+      </div>
+      <div class="col">
+        <ul>
+            {% for blog in latest_blog_posts %}
+                <li><a href="{% url 'article-detail' blog.pk %}">{{ blog.title }}</a> - {{ blog.author }}<br>
+                {{ blog.body }}</li>
+            {% endfor %}
+        </ul>
+      </div>
+    </div>
+  </div>
+
+<ul>
+    {% for blog in latest_blog_posts %}
+        <li><a href="{% url 'article-detail' blog.pk %}">{{ blog.title }}</a> - {{ blog.author }}<br>
+        {{ blog.body }}</li>
+    
+    {% endfor %}
+    </ul>
+
+{% endblock %}
