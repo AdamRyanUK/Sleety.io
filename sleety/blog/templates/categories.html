@@ -1,0 +1,33 @@
+{% extends 'base.html' %}
+{% block title %}
+Sleety Categories
+{% endblock %}
+
+{% block content %}
+{% if category_posts %}
+<h1>{{ cats }} </h1>
+<br/>
+<ul>
+    {% for blog in category_posts %}
+    <a href="{% url 'article-detail' blog.pk %}">{{ blog.title }}</a> - <b>{{ blog.author }} - {{ blog.post_date}}</b>
+        {% if user.is_authenticated %}
+        <small>
+            <a href="{% url 'editblog' blog.pk %}"> (edit blog)</a>
+            <a href="{% url 'deleteblog' blog.pk %}"> (delete)</a>
+        </small>
+        {% else %}
+        {% endif %}
+        <br/>
+        {{ blog.body|slice:"200"|safe }}
+        <br/>
+        <br/>
+        <!-- <li><a href="{% url 'article-detail' blog.pk %}">{{ blog.title }}</a> - <b>{{ blog.author }} - {{ blog.post_date}}</b>-<small><a href="{% url 'editblog' blog.pk %}"> (edit blog)</a>
+            <a href="{% url 'deleteblog' blog.pk %}"> (delete)</a></small><br>
+        {{ blog.body }}</li> -->
+    
+    {% endfor %}
+    </ul>
+{% else %}
+<h2>sorry there are no posts under this category yet</h2>
+{% endif %}
+{% endblock %}

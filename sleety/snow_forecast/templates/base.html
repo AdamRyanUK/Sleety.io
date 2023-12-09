@@ -13,11 +13,27 @@
 
   <!-- Link to your external CSS file -->
   <link rel="stylesheet" href="{% static 'css/styles.css' %}">
+
+  <!-- tell internet explorer to use highest available document mode -->
+  <meta http-equiv="X-UA-Compatible" content="ie=edge">
+
+  <!-- jQuery and Bootstrap CSS -->
+  <script src="https://code.jquery.com/jquery-3.2.1.slim.min.js" integrity="sha384-KJ3o2DKtIkvYIK3UENzmM7KCkRr/rE9/Qpg6aAZGJwFDMVNA/GpGFF93hXpG5KkN" crossorigin="anonymous"></script>
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js" integrity="sha384-ApNbgh9B+Y1QKtv3Rn7W3mgPxhU9K/ScQsAP7hUibX39j7fakFPskvXusvfa0b4Q" crossorigin="anonymous"></script>
+  <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.min.js" integrity="sha384-wfSDF2E50Y2D1uUdj0O3uMBJnjuUD4Ih7YwaYd1iqfktj0Uod8GCExl3Og8ifwB6" crossorigin="anonymous"></script>
+
+  <!-- Bootstrap Icons -->
+  <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.3.0/font/bootstrap-icons.css">
+  
+  <!-- HTMX -->
+  <script src="https://unpkg.com/htmx.org@1.6.0"></script>
    
     <title>{% block title %} Sleety.io for Snow {% endblock %}</title>
 
   </head>
   <body>
+
+    <!-- Upper Navbar -->
     <nav class="navbar navbar-expand-lg navbar-light py-0" style="background-color: #FFFFFF;">
         <a class="navbar-brand" href="{% url 'home' %}">
           <img src="{% static 'images/logo.png' %}" class="custom-logo" alt="Logo">
@@ -31,9 +47,29 @@
             <li class="nav-item active">
             <a class="nav-link" href="#">Home <span class="sr-only">(current)</span></a>
             </li>
-            <li class="nav-item">
-            <a class="nav-link" href="#">Link</a>
-            </li>
+
+            {% if user.is_authenticated %}
+              <li class="nav-item">
+                <a class="nav-link" href="{% url 'add-post' %}">Add Post</a>
+              </li>
+              <li class="nav-item">
+                <a class="nav-link" href="{% url 'add-category' %}">Add Category</a>
+              <li class="nav-item">
+                <a class="nav-link" href="{% url 'logout' %}">Logout</a>
+              </li>
+              <li class="nav-item">
+                <a class="nav-link" href="{% url 'edit-profile' %}">Edit Profile</a>
+              </li>
+
+            {% else %}
+              <li class="nav-item">
+                <a class="nav-link" href="{% url 'register' %}">Register</a>
+              </li>
+              <li class="nav-item">
+                <a class="nav-link" href="{% url 'login' %}">Login</a>
+              </li>
+            {% endif %}
+
             <li class="nav-item dropdown">
             <a class="nav-link dropdown-toggle" href="#" id="navbarDropdown" role="button" data-toggle="dropdown" aria-haspopup="true" aria-expanded="false">
                 Dropdown
@@ -55,18 +91,47 @@
         </form>
         </div>
     </nav>
-    <nav class="navbar navbar-expand-lg navbar-dark py-1" style="background-color: #204875;">
+
+<!-- Lower Navbar -->
+<!-- Lower Navbar -->
+<nav class="navbar navbar-expand-lg navbar-dark py-2" style="background-color: #204875;">
+  <div class="container-fluid">
+
+      <!-- Navbar content, including the dropdown select menu -->
       <div class="collapse navbar-collapse" id="navbarSupportedContent">
-      <ul class="navbar-nav mr-auto">
-          <li class="nav-item active">
-          <a class="nav-link" href="#">Home <span class="sr-only">(current)</span></a>
-          </li>
-      <form class="form-inline my-2 my-lg-0">
-          <input class="form-control mr-sm-2" type="search" placeholder="Search" aria-label="Search">
-          <button class="btn btn-outline-success my-2 my-sm-0" type="submit">Search</button>
-      </form>
+          <ul class="navbar-nav mr-auto">
+              <!-- Add other navbar items if needed -->
+          </ul>
+
+          <!-- Add the dropdown select menu to the navbar -->
+          <form class="form-inline my-2 my-lg-0" action="{% url 'forecast' %}" method="post">
+            {% csrf_token %}
+            
+            <!-- First select for country -->
+            <select class="custom-select mr-sm-2"
+                    name="country"
+                    hx-get="{% url 'resorts' %}"
+                    hx-trigger="change"
+                    hx-target="#resort_names">
+                <option selected>Select Country</option>
+                {% for country in countries %}
+                    <option value="{{ country }}">{{ country }}</option>
+                {% endfor %}
+            </select>
+        
+                <!-- Second select for resort -->
+            <div id="resort_names" class="mr-2">
+                {% include 'partials/resort_names.html' %}
+            </div>
+
+  <!-- Submit button -->
+            <button type="submit" class="btn btn-primary active">Let it snow!</button>
+            </form>
+        
       </div>
-  </nav>
+  </div>
+</nav>
+
   <br>
   <div class="container">
   {% block content %}
@@ -75,12 +140,5 @@
   </div>
   
 
-   <!-- Optional JavaScript suggested by bootstrap 4.4-->
-    <!-- jQuery first, then Popper.js, then Bootstrap JS -->
-    <script src="https://code.jquery.com/jquery-3.4.1.slim.min.js" integrity="sha384-J6qa4849blE2+poT4WnyKhv5vZF5SrPo0iEjwBvKU7imGFAV0wwj1yYfoRSJoZ+n" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/popper.js@1.16.0/dist/umd/popper.min.js" integrity="sha384-Q6E9RHvbIyZFJoft+2mJbHaEWldlvI9IOYy5n3zV9zzTtmI3UksdQRVvoxMfooAo" crossorigin="anonymous"></script>
-    <script src="https://cdn.jsdelivr.net/npm/bootstrap@4.4.1/dist/js/bootstrap.min.js" integrity="sha384-wfSDF2E50Y2D1uUdj0O3uMBJnjuUD4Ih7YwaYd1iqfktj0Uod8GCExl3Og8ifwB6" crossorigin="anonymous"></script>
-    <!-- end of optional javascript suggested by bootstrap v 4.4 -->
-  </body>
 </body>
 </html>

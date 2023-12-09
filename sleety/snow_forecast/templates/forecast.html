@@ -1,0 +1,28 @@
+{% extends 'base.html' %}
+{% block title %}
+Sleety Snow Forecast
+{% endblock %}
+
+
+{% block content %}
+<h1>Snow Forecast for {{ selected_resort_name }} </h1>
+<!-- Display Time and Temperature_2m -->
+
+<div class="btn-group" role="group" aria-label="Basic outlined example">
+    <button type="button" class="btn btn-outline-primary">Base</button>
+    <button type="button" class="btn btn-outline-primary">Mid</button>
+    <button type="button" class="btn btn-outline-primary">Top</button>
+  </div>
+</br>
+  <div class="btn-group" role="group" aria-label="Basic outlined example">
+    <button type="button" class="btn btn-outline-primary">°C</button>
+    <button type="button" class="btn btn-outline-primary">°F</button>
+  </div>
+<br/>
+<br/>
+
+{{ daily_final | safe }}
+
+
+
+{% endblock %}

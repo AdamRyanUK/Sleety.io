@@ -1,0 +1,22 @@
+{% extends 'base.html' %}
+{% block title %}
+Sleety Add Category
+{% endblock %}
+
+{% block content %}
+{% if user.is_authenticated %}
+<h1>Page to add a Category. </h1>
+<br>
+
+<div class="form-group">
+<form method="POST">
+    {% csrf_token %}
+    {{ form.as_p }}
+    <button type="submit" class="btn btn-primary" style="background-color: #204875;">Submit Category</button>
+
+</div>
+{% else %}
+<h3>Sorry, you do not have permission to add a posts.</h3>
+{% endif %}
+
+{% endblock %}

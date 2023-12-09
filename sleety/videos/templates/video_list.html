@@ -1,0 +1,35 @@
+{% extends 'base.html' %}
+{% block title %}
+Sleety Videos
+{% endblock %}
+
+
+{% block content %}
+<!-- load all embedded video tags  -->
+{% load embed_video_tags %}
+
+<div class="container">
+    <div class="row">
+        <div class="col-12 mt-5 text-center">
+            <h1> Videos </h1>
+            <br/>
+            
+            <div class="d-flex flex-wrap">
+                {% for item in videos %}
+                    <div class="col-lg-6 px-3 mb-5">
+                        {% video item.url '426x240' %}
+                        <div class="d-flex justify-content-center">
+                            <b><h3>{{ item.title }}</h3></b>
+                        </div>
+                    </div>
+                {% endfor %}
+            </div>
+
+        </div>
+    </div>
+</div>
+
+
+
+
+{% endblock %}

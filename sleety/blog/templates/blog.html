@@ -1,20 +1,42 @@
+
 {% extends 'base.html' %}
+
 {% block title %}
-Sleety Blog Index
+    Sleety Blog Index
 {% endblock %}
 
 {% block content %}
-<h1>This will be a page for the blog</h1>
+    <h1>This will be a page for the blog</h1>
 
-<br>
+    <br>
 
-<ul>
-{% for blog in object_list %}
-    <li><a href="{% url 'article-detail' blog.pk %}">{{ blog.title }}</a> - {{ blog.author }}<br>
-    {{ blog.body }}</li>
+    <ul>
+        {% for blog in object_list %}
+            <li>
+                <a href="{% url 'article-detail' blog.pk %}">{{ blog.title }}</a> - 
+                <b>{{ blog.author }} - 
+                {% if blog.category_slug %}
+                    <a href="{% url 'category' blog.category_slug %}">{{ blog.category }}</a>
+                {% else %}
+                    {{ blog.category }}
+                {% endif %} 
+                - {{ blog.post_date}}</b>
 
-{% endfor %}
-</ul>
-
-
+                {% if user.is_authenticated %}
+                    <small>
+                        <a href="{% url 'editblog' blog.pk %}"> (edit blog)</a>
+                        <a href="{% url 'deleteblog' blog.pk %}"> (delete)</a>
+                    </small>
+                {% endif %}
+                
+                {% if blog.header_image %}
+                    <br/>
+                    <img src="{{ blog.header_image.url }}" alt="{{ blog.title }}" style="max-width: 100px; max-height: 100px;">
+                {% endif %}
+                
+                <br/>
+                {{ blog.snippet}}
+            </li>
+        {% endfor %}
+    </ul>
 {% endblock %}

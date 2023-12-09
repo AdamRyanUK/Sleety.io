@@ -1,0 +1,6 @@
+  <select class="custom-select" name="resort">
+    <option selected>Select Resort</option>
+    {% for resort in resorts %}
+        <option value="{{ resort.name }}">{{ resort.name }}</option>
+    {% endfor %}
+</select>

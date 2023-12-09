@@ -1,0 +1,23 @@
+{% extends 'base.html' %}
+{% block title %}
+Sleety Add Post
+{% endblock %}
+
+{% block content %}
+{% if user.is_authenticated %}
+<h1>Page to add a Blog Post. </h1>
+<br>
+
+<div class="form-group">
+<form method="POST" enctype="multipart/form-data">
+    {% csrf_token %}
+    {{ form.media }}
+    {{ form.as_p }}
+    <button type="submit" class="btn btn-primary" style="background-color: #204875;">Submit Blog Post</button>
+
+</div>
+{% else %}
+<h3>Sorry, you do not have permission to add a posts.</h3>
+{% endif %}
+
+{% endblock %}
