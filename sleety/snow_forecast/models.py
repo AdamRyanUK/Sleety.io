@@ -12,6 +12,35 @@ class Resort(models.Model):
     base = models.IntegerField(_("base"))
     mid = models.IntegerField(_("mid"))
     top = models.IntegerField(_("top"))
+
+    def to_json(self):
+        return {
+            'name': self.name,
+            'country': self.country,
+            'continent': self.continent,
+            'state_province': self.state_province,
+            'timezone': self.timezone,
+            'lat': self.lat,
+            'lon': self.lon,
+            'base': self.base,
+            'mid': self.mid,
+            'top': self.top,
+        }
+
+    @classmethod
+    def from_json(cls, data):
+        return cls(
+            name=data['name'],
+            country=data['country'],
+            continent=data['continent'],
+            state_province=data['state_province'],
+            timezone=data['timezone'],
+            lat=data['lat'],
+            lon=data['lon'],
+            base=data['base'],
+            mid=data['mid'],
+            top=data['top'],
+        )
     
     def __str__(self):
         return f"{self.name}"

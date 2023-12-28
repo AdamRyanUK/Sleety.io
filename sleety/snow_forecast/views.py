@@ -1,5 +1,6 @@
 from django.shortcuts import render
 import json
+from django.shortcuts import redirect
 import requests
 from .models import Resort
 from plotly.offline import plot
@@ -10,11 +11,18 @@ from django.views.generic import ListView
 from blog.models import Post
 from datetime import datetime, date, time 
 from django.core.cache import cache
-from django.http import HttpResponseServerError
+from django.http import HttpResponse, HttpResponseServerError
 import pandas as pd
 from .forms import ResortForm
-from .Icons import weather_icons, weather_icons_night
+from .icons import weather_icons, weather_icons_night
 from .sleety_score import calculate_conditions_base, calculate_conditions_mid, calculate_conditions_top
+from .api import get_openweather_data
+from .functions import path_to_image_html, calculate_temperature_for_array, only_rain, estimate_snowmelt, calculate_melt_adjusted_base_snowpack, calculate_melt_adjusted_mid_snowpack, calculate_melt_adjusted_top_snowpack 
+from django.urls import reverse
+from plotly.subplots import make_subplots
+from django.http import JsonResponse
+from django.views.decorators.csrf import csrf_exempt
+from django.core.serializers import serialize
 
 def home(request):
 
@@ -33,7 +41,7 @@ def home(request):
     base_str = ",".join(map(str, base))
 
     # Make the API request using the constructed URL
-    api_request = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat_str}&longitude={lon_str}&forecast_days=10&daily=snowfall_sum&timezone={tz_str}&elevation={base_str}")
+    api_request = requests.get(f"https://api.open-meteo.com/v1/forecast?latitude={lat_str}&longitude={lon_str}&forecast_days=10&daily=snowfall_sum&timezone={tz_str}&elevation={base_str}&models=gfs_seamless")
 
     api = json.loads(api_request.content)
 
@@ -85,423 +93,1339 @@ def home(request):
     
     return render(request, 'home.html', context)
 
-from datetime import datetime
-
-def categorize_time(hour):
-    if 0 <= hour < 6:
-        return 'night'
-    elif 6 <= hour < 12:
-        return 'morning'
-    elif 12 <= hour < 18:
-        return 'afternoon'
-    else:
-        return 'evening'
+def dynamic_lookup_view(request, name):
+    obj = Resort.objects.get(name=name)
     
-def resorts(request):
-    country = request.GET.get('country')
-    resorts = Resort.objects.filter(country=country)
-    context = {'resorts':resorts}
-    return render(request, 'partials/resort_names.html', context)
-
-
-
-def forecast(request):
-    # Check if the forecast data is already cached
-    cached_forecast = cache.get('forecast_data')
-
-    # If not cached, make the API call and cache the data
-    if not cached_forecast:
-        resorts = Resort.objects.all()
-
-        latitudes = [resort.lat for resort in resorts]
-        longitudes = [resort.lon for resort in resorts]
-        timezones = [resort.timezone for resort in resorts]
-        base = [resort.base for resort in resorts]
-        mid = [resort.mid for resort in resorts]
-        top = [resort.top for resort in resorts]
-
-        lat_str = ",".join(map(str, latitudes))
-        lon_str = ",".join(map(str, longitudes))
-        tz_str = ",".join(map(str, timezones))
-        base_str = ",".join(map(str, base))
-
-        api_request = requests.get(
-            f"https://api.open-meteo.com/v1/forecast?latitude={lat_str}&longitude={lon_str}&forecast_days=10&hourly=temperature_2m,geopotential_height_1000hPa,geopotential_height_1000hPa,temperature_1000hPa,geopotential_height_850hPa,precipitation,weather_code,temperature_850hPa,windspeed_850hPa,wind_speed_10m,wind_gusts_10m,winddirection_850hPa,freezing_level_height&timezone={tz_str}&elevation={base_str}&models=gfs_seamless"                                      
-        )
-        api = json.loads(api_request.content)
-
-        # Cache the API response for an hour (adjust as needed)
-        cache.set('forecast_data', api, 3 * 60 * 60)
-
-        # Use the cached forecast data
-        cached_forecast = api
-
     if request.method == 'POST':
         selected_resort_name = request.POST.get('resort')
-
-        # Check if the default option is selected
-        if selected_resort_name == 'Select Resort':
-            # Handle this case, e.g., redirect with an error message
-            return render(request, 'forecast.html', {'error_message': 'Please select a valid resort'})
-
-    elif request.method == 'GET':
-        selected_resort_name = request.GET.get('resort')
-
-    all_resorts= Resort.objects.all()
-
-    # Filter the resorts list to include only the selected resort
-    selected_resort = all_resorts.filter(name=selected_resort_name).first()
-
-# Check if the selected resort exists
-    if selected_resort is None:
-        # Handle the case when the selected resort is not found
-        return render(request, 'forecast.html', {'error_message': 'Selected resort not found'})
-
-    # Define resorts here as well
-    resorts= Resort.objects.all()
-    base = selected_resort.base
-    mid = selected_resort.mid
-    top = selected_resort.top
-
-    # Find the index of the selected resort in the list of resorts
-    selected_resort_index = [resort.name for resort in resorts].index(selected_resort_name)
-
-    temperature_icons = {}
-    for temperature in range(-45, 45):
-        temperature_icons[temperature] = f'/static/images/temperatures_celcius/{temperature}.png'
-
-    # Add "_night" to the end of each file name for night time
-    weather_icons_night = {code: path.replace('.png', '_night.png') for code, path in weather_icons.items()}
+        # Update the obj here
+        obj.name = selected_resort_name
+        obj.save()
     
-    # Retrieve the forecast data for the selected resort
-    resort_forecast_data = cached_forecast[selected_resort_index]
-
-    df = pd.DataFrame(resort_forecast_data['hourly'])
-    df['datetime'] = pd.to_datetime(df['time'])
-    df['date'] = pd.to_datetime(df['datetime']).dt.date
-    df['hour'] = pd.to_datetime(df['datetime']).dt.hour
-    df['height_diff'] = df['geopotential_height_850hPa'] - df['geopotential_height_1000hPa']
-    df['temp_diff'] = df['temperature_850hPa'] - df['temperature_1000hPa']
-    df['lapse_rate'] = (df['temp_diff']/df['height_diff'])*100
-    df['temp_mid'] = df['temperature_850hPa'] + (df['lapse_rate']*((mid - df['geopotential_height_850hPa'])/100))
-    df['temp_top'] = df['temperature_850hPa'] + (df['lapse_rate']*((top - df['geopotential_height_850hPa'])/100))
-    df['temperature_2m'] = df['temperature_2m'].round().astype(int)
-
-    # Apply the snowfall_amount function to create new columns for snowfall totals
-    df['base_snowfall_total'] = df.apply(lambda row: round(snowfall_amount(row['temperature_2m'], row['precipitation']) * 0.0393701, 1), axis=1)
-    df['mid_snowfall_total'] = df.apply(lambda row: round(snowfall_amount(row['temp_mid'], row['precipitation']) *0.0393701,1), axis=1)
-    df['top_snowfall_total'] = df.apply(lambda row: round(snowfall_amount(row['temp_top'], row['precipitation']) *0.0393701,1), axis=1)
-    # convert snowfall to inches and sum for period. 
-    df['base_cumulative_snowfall'] = df['base_snowfall_total'].cumsum()*0.0393701
-    df['mid_cumulative_snowfall'] = df['mid_snowfall_total'].cumsum()*0.0393701
-    df['top_cumulative_snowfall'] = df['top_snowfall_total'].cumsum()*0.0393701
-    #leave the precipitation as mm.
-    df['base_rainfall_total'] = df.apply(lambda row: round(rainfall_amount(row['temperature_2m'], row['precipitation']) * 0.0393701, 1), axis=1)
-    df['mid_rainfall_total'] = df.apply(lambda row: round(rainfall_amount(row['temp_mid'], row['precipitation']) * 0.0393701, 1), axis=1)
-    df['top_rainfall_total'] = df.apply(lambda row: round(rainfall_amount(row['temp_top'], row['precipitation']) * 0.0393701, 1), axis=1)
-    df['cumulative_precipitation'] = df['precipitation'].cumsum()/10
-    #calculate how much wind is increasing with height
-    df['wind_speed_gradient']= (df['windspeed_850hPa'] - df['wind_speed_10m'])/(df['geopotential_height_850hPa'] - 10)
-    #work out the wind speed and gusts for mid and top, we already have base as the 10m wind speed + gusts. 
-    df['wind_speed_base'] = df['wind_speed_10m'].round(1)
-    df['wind_gusts_base'] = df['wind_gusts_10m'].round(1)
-    df['wind_speed_mid'] = df['wind_speed_10m'] + ((mid - (base + 10)) * df['wind_speed_gradient'])
-    df['wind_gusts_mid'] = df['wind_gusts_10m'] + ((mid - (base + 10)) * df['wind_speed_gradient'])
-    df['wind_speed_top'] = df['wind_speed_10m'] + ((top - (base + 10)) * df['wind_speed_gradient'])
-    df['wind_gusts_top'] = df['wind_gusts_10m'] + ((top - (base + 10)) * df['wind_speed_gradient'])
-
-    # Apply the function to create a new column 'wind_chill'
-    df['feelslike_base_max'] = calculate_wind_chill(df['temperature_2m'], df['wind_speed_10m']).round().astype(int)
-    df['feelslike_base_min'] = calculate_wind_chill(df['temperature_2m'], df['wind_gusts_10m']).round().astype(int)
-
-    df['feelslike_mid_max'] = calculate_wind_chill(df['temp_mid'], df['wind_speed_mid'])
-    df['feelslike_mid_min'] = calculate_wind_chill(df['temp_mid'], df['wind_gusts_mid'])
-
-    df['feelslike_top_max'] = calculate_wind_chill(df['temp_top'], df['wind_speed_top'])
-    df['feelslike_top_min'] = calculate_wind_chill(df['temp_top'], df['wind_gusts_top'])
-
-    #make copy of weather code for later use in the Sleety Index (C)
-    df['weather_code_copy'] = df['weather_code']
-
-    #add weather icon column, map the images to it. 
-    df['weather_icon'] = np.where(get_time_of_day(df['hour']) == 'day',
-                              df['weather_code'].map(weather_icons),
-                              df['weather_code'].map(weather_icons_night).fillna('/static/images/default.png'))
-
-    #save the generic hourly dataframe with columns of intrest. 
-    df_all = df[['datetime', 'date','hour','temperature_2m', 'geopotential_height_1000hPa',
-       'temperature_1000hPa', 'geopotential_height_850hPa',
-       'temperature_850hPa', 'precipitation', 'weather_code',
-       'windspeed_850hPa', 'wind_speed_10m', 'wind_gusts_10m', 'wind_speed_base', 'wind_gusts_base',
-       'winddirection_850hPa', 'freezing_level_height', 'temp_mid',
-       'temp_top', 
-        'base_cumulative_snowfall',
-       'mid_cumulative_snowfall', 'top_cumulative_snowfall','base_snowfall_total','mid_snowfall_total','top_snowfall_total',
-       'cumulative_precipitation', 'base_rainfall_total','mid_rainfall_total','top_rainfall_total',
-       'wind_speed_gradient', 'wind_speed_mid',
-       'wind_gusts_mid', 'wind_speed_top', 'wind_gusts_top',
-       'feelslike_base_max', 'feelslike_base_min', 'feelslike_mid_max',
-       'feelslike_mid_min', 'feelslike_top_max', 'feelslike_top_min', 'weather_icon', 'weather_code_copy']]
-
-# Apply the function to calculate base sleety index
-    df_all['condition_score'] = df_all.apply(calculate_conditions_base, axis=1)
-    min_score = df_all['condition_score'].min()
-    max_score = df_all['condition_score'].max()
-
-    df_all['condition_index'] = (10 * (df_all['condition_score'] - min_score) / (max_score - min_score))
-    df_all['condition_index'] = df_all['condition_index'].round(1)
-
-# Apply the function to calculate mid sleety index
-    df_all['condition_score_mid'] = df_all.apply(calculate_conditions_mid, axis=1)
-    min_score = df_all['condition_score_mid'].min()
-    max_score = df_all['condition_score_mid'].max()
-
-    df_all['condition_index_mid'] = (10 * (df_all['condition_score_mid'] - min_score) / (max_score - min_score))
-    df_all['condition_index_mid'] = df_all['condition_index_mid'].round(1)
-
-# Apply the function to calculate top sleety index
-    df_all['condition_score_top'] = df_all.apply(calculate_conditions_top, axis=1)
-    min_score = df_all['condition_score_top'].min()
-    max_score = df_all['condition_score_top'].max()
-
-    df_all['condition_index_top'] = (10 * (df_all['condition_score_top'] - min_score) / (max_score - min_score))
-    df_all['condition_index_top'] = df_all['condition_index_top'].round(1)
-
-#         def forecast(request):
-#     # ... (your existing code)
-
-#     if request.method == 'POST':
-#         selected_altitude = request.POST.get('altitude', 'base')
-
-# make sure the post is using the onclick. 
-
-#         # Filter the DataFrame based on the selected altitude
-#         if selected_altitude == 'base':
-#nother line here about and if Temp = C, if F then convert to preferred units. 
-#             df_selected = df[['datetime', 'date', 'hour', 'temperature_2m', 'geopotential_height_1000hPa',
-#                               'temperature_1000hPa', 'geopotential_height_850hPa', 'temperature_850hPa',
-#                               'precipitation', 'weather_code', 'windspeed_850hPa', 'wind_speed_10m',
-#                               'wind_gusts_10m', 'winddirection_850hPa', 'freezing_level_height', 'temp_mid',
-#                               'temp_top', 'base_snowfall_total', 'mid_snowfall_total', 'top_snowfall_total',
-#                               'base_cumulative_snowfall', 'mid_cumulative_snowfall', 'top_cumulative_snowfall',
-#                               'cumulative_precipitation', 'wind_speed_gradient', 'wind_speed_mid',
-#                               'wind_gusts_mid', 'wind_speed_top', 'wind_gusts_top', 'feelslike_base_max',
-#                               'feelslike_base_min', 'feelslike_mid_max', 'feelslike_mid_min', 'feelslike_top_max',
-#                               'feelslike_top_min', 'weather_icon']]
-#         elif selected_altitude == 'mid':
-#             df_selected = df[['datetime', 'date', 'hour', 'temperature_2m', 'geopotential_height_1000hPa',
-#                               'temperature_1000hPa', 'geopotential_height_850hPa', 'temperature_850hPa',
-#                               'precipitation', 'weather_code', 'windspeed_850hPa', 'wind_speed_10m',
-#                               'wind_gusts_10m', 'winddirection_850hPa', 'freezing_level_height', 'temp_mid',
-#                               'temp_top', 'base_snowfall_total', 'mid_snowfall_total', 'top_snowfall_total',
-#                               'base_cumulative_snowfall', 'mid_cumulative_snowfall', 'top_cumulative_snowfall',
-#                               'cumulative_precipitation', 'wind_speed_gradient', 'wind_speed_mid',
-#                               'wind_gusts_mid', 'wind_speed_top', 'wind_gusts_top', 'feelslike_base_max',
-#                               'feelslike_base_min', 'feelslike_mid_max', 'feelslike_mid_min', 'feelslike_top_max',
-#                               'feelslike_top_min', 'weather_icon']]
-#         elif selected_altitude == 'top':
-#             df_selected = df[['datetime', 'date', 'hour', 'temperature_2m', 'geopotential_height_1000hPa',
-#                               'temperature_1000hPa', 'geopotential_height_850hPa', 'temperature_850hPa',
-#                               'precipitation', 'weather_code', 'windspeed_850hPa', 'wind_speed_10m',
-#                               'wind_gusts_10m', 'winddirection_850hPa', 'freezing_level_height', 'temp_mid',
-#                               'temp_top', 'base_snowfall_total', 'mid_snowfall_total', 'top_snowfall_total',
-#                               'base_cumulative_snowfall', 'mid_cumulative_snowfall', 'top_cumulative_snowfall',
-#                               'cumulative_precipitation', 'wind_speed_gradient', 'wind_speed_mid',
-#                               'wind_gusts_mid', 'wind_speed_top', 'wind_gusts_top', 'feelslike_base_max',
-#                               'feelslike_base_min', 'feelslike_mid_max', 'feelslike_mid_min', 'feelslike_top_max',
-#                               'feelslike_top_min', 'weather_icon']]
-#         else:
-#             # Handle invalid selections
-    
-    df_daily = df_all.copy()
-    # cut hours into chunks and label appropriatley
-    #set the date and time of day as indexes
-    df_daily.set_index(['date'], inplace=True)
-    #aggregate the data to a dict and specify how to do so for each one, 
-    # most are mean, some median, snow is summed. 
-    agg_dict_daily = {
-        'temperature_2m': ['max', 'min'], 'temp_mid': ['min', 'max'], 'temp_top': ['min', 'max'],
-        'wind_speed_10m': 'mean', 'wind_gusts_10m': 'max',
-        'wind_speed_base':'mean','wind_gusts_base': 'max',
-        'wind_speed_mid': 'mean', 'wind_gusts_mid': 'max',
-        'wind_speed_top': 'mean', 'wind_gusts_top': 'max',
-        'winddirection_850hPa': 'median',
-        'base_snowfall_total': 'sum', 'mid_snowfall_total': 'sum', 'top_snowfall_total': 'sum',
-        'base_rainfall_total': 'sum', 'mid_rainfall_total': 'sum', 'top_rainfall_total':'sum',
-        'cumulative_precipitation': 'sum',  
-        'feelslike_base_max': 'max', 'feelslike_base_min': 'min',
-        'feelslike_mid_max': 'max', 'feelslike_mid_min': 'min',
-        'feelslike_top_max': 'max', 'feelslike_top_min': 'min', 
-        'condition_index': 'mean', 'condition_index_mid':'mean', 'condition_index_top': 'mean'}
-
-    #group by first and second level of multi-index, i.e. date and time of day. 
-    df_grouped_daily = df_daily.groupby(df_daily.index).agg(agg_dict_daily)
-    
-    #***************DAILY TEMP********************#
-    #map the weather paths onto the 2m temp for base. 
-    df_grouped_daily['temperature_2m_max_icons'] = df_grouped_daily[('temperature_2m', 'max')].map(temperature_icons).map(path_to_image_html)
-    df_grouped_daily['temperature_2m_min_icons'] = df_grouped_daily[('temperature_2m', 'min')].map(temperature_icons).map(path_to_image_html)
-    
-    # Create 'base_temp_icons' column by combining the max and min icons
-    df_grouped_daily['Max/Min'] = df_grouped_daily['temperature_2m_max_icons'] + " " + df_grouped_daily['temperature_2m_min_icons']
-    
-    # Map feels like temp icons to the right columns and then combine into a single column. 
-    df_grouped_daily['feelslike_base_min_icons'] = df_grouped_daily['feelslike_base_min', 'min'].map(temperature_icons).map(path_to_image_html)
-    df_grouped_daily['feelslike_base_max_icons'] = df_grouped_daily['feelslike_base_max', 'max'].map(temperature_icons).map(path_to_image_html)
-    df_grouped_daily['Feels Like Max/Min'] = df_grouped_daily['feelslike_base_max_icons'] + " " + df_grouped_daily['feelslike_base_min_icons']
-
-    #Create a Base Rain/Snow Joint Precip column. 
-    df_grouped_daily['Base Precipitation'] = df_grouped_daily['base_rainfall_total'].round(1).astype(str)  + "mm / " + df_grouped_daily['base_snowfall_total'].astype(str) +"'"
-    
-    df_grouped_daily['wind_speed_base_str'] = df_grouped_daily['wind_speed_base'].round(1).astype(str)
-    df_grouped_daily['wind_gusts_base_str'] = df_grouped_daily['wind_gusts_base'].round(1).astype(str)
-    df_grouped_daily['Base Winds'] = (df_grouped_daily['wind_speed_base_str'] + "kph / " + df_grouped_daily['wind_gusts_base_str']+ "kph")
-    df_grouped_daily['condition_index'] = df_grouped_daily['condition_index'].round(1)
-    #create a selection of columns to merge with the second data frame. 
-    df_grouped_daily = df_grouped_daily[['Max/Min', 'Feels Like Max/Min', 'Base Precipitation', 'Base Winds', 'condition_index']]
-
-
-    df_selected = df[['datetime', 'date','hour','temperature_2m', 'geopotential_height_1000hPa',
-       'temperature_1000hPa', 'geopotential_height_850hPa',
-       'temperature_850hPa', 'precipitation', 'weather_code',
-       'windspeed_850hPa', 'wind_speed_10m', 'wind_gusts_10m',
-       'winddirection_850hPa', 'freezing_level_height', 'temp_mid',
-       'temp_top', 'base_snowfall_total', 'mid_snowfall_total',
-       'top_snowfall_total', 'base_cumulative_snowfall',
-       'mid_cumulative_snowfall', 'top_cumulative_snowfall',
-       'cumulative_precipitation', 'wind_speed_gradient', 'wind_speed_mid',
-       'wind_gusts_mid', 'wind_speed_top', 'wind_gusts_top',
-       'feelslike_base_max', 'feelslike_base_min', 'feelslike_mid_max',
-       'feelslike_mid_min', 'feelslike_top_max', 'feelslike_top_min', 'weather_icon', 'weather_code_copy']]
-    #save a copy but for categorized time data. 
-    df_hourly = df_selected.copy()
-
-        # Convert 'hour' column to numeric
-    df_hourly['hour'] = pd.to_numeric(df_hourly['hour'], errors='coerce')
-
-    # Cut hours into chunks and label appropriately
-    df_hourly['time_of_day'] = pd.cut(df_hourly['hour'], bins=[0, 6, 12, 18, 24], labels=['night', 'morning', 'afternoon', 'evening'], right=False)
-
-    # Set the date and time of day as indexes
-    df_hourly.set_index(['date', 'time_of_day'], inplace=True)
-
-# Rest of your code...
-
-
-    #aggregate the data to a dict and specify how to do so for each one, 
-    # most are mean, some median, snow is summed. 
-    agg_dict = {'hour': 'first','temperature_2m': 'mean', 'geopotential_height_1000hPa': 'mean', 'temperature_1000hPa': 'mean',
-                'geopotential_height_850hPa': 'mean', 'temperature_850hPa': 'mean', 'precipitation': 'sum',
-                'weather_code': lambda x: x.value_counts().idxmax(), 'weather_icon': lambda x: x.value_counts().idxmax(), 'windspeed_850hPa': 'mean', 'wind_speed_10m': 'mean', 'wind_gusts_10m': 'max',
-                'winddirection_850hPa': 'median', 'freezing_level_height': 'mean', 'temp_mid': 'mean', 'temp_top': 'mean',
-                'base_cumulative_snowfall': 'sum', 'mid_cumulative_snowfall': 'sum', 'top_cumulative_snowfall': 'sum',
-                'cumulative_precipitation': 'sum', 'wind_speed_gradient': 'mean', 'wind_speed_mid': 'mean',
-                'wind_gusts_mid': 'mean', 'wind_speed_top': 'mean', 'wind_gusts_top': 'mean', 'feelslike_base_max': 'mean',
-                'feelslike_base_min': 'mean', 'feelslike_mid_max': 'mean', 'feelslike_mid_min': 'mean',
-                'feelslike_top_max': 'mean', 'feelslike_top_min': 'mean'}
-
-    #group by first and second level of multi-index, i.e. date and time of day. 
-    df_grouped = df_hourly.groupby(level=[0, 1]).agg(agg_dict)
-
-    # Unstack the 'time_of_day' values into separate columns
-    df_unstacked = df_grouped.unstack(level=-1)
-
-    df_unstacked = df_unstacked['weather_icon']
-    # Reset the index to move 'date' and 'time_of_day' back to columns
-    df_unstacked = df_unstacked.reset_index()
-
-    df_grouped_daily.columns = df_grouped_daily.columns.droplevel(-1)
-    df_grouped_daily = df_grouped_daily.reset_index()
-
-
-    daily_final = df_unstacked.merge(df_grouped_daily, on = 'date', how = 'left') 
-    daily_final = daily_final.set_index('date')
-    daily_final.columns.name = daily_final.index.name
-    daily_final.index.name = None
-    
-    # daily_final = pd.merge(df_unstacked, df_grouped_daily, left_index=True, right_index=True)
-
-    hourly_html_table = df.to_html()
-    daily_html_table = df_grouped_daily.to_html(escape=False)
-    categorized_html_table = df_unstacked.to_html(escape=False, formatters={('morning'): path_to_image_html,
-                                                                        ('afternoon'): path_to_image_html,
-                                                                        ('evening'): path_to_image_html,
-                                                                        ( 'night'): path_to_image_html})
-    daily_final = daily_final.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={('morning'): path_to_image_html,
-                                                                        ('afternoon'): path_to_image_html,
-                                                                        ('evening'): path_to_image_html,
-                                                                        ( 'night'): path_to_image_html})
-
     context = {
-        'daily_final': daily_final,
-        'daily_df': daily_html_table,
-        'selected_resort_name': selected_resort_name,
-        'resort_forecast_data':resort_forecast_data,
-        'hourly_df':hourly_html_table,
-        'categorized_df':categorized_html_table,
+        "resort": obj
     }
+    return render(request, "practice.html", context)
+
+def forecast(request):
+    
+    df, daily_final, selected_resort = get_openweather_data(request)
+
+    resort_name = selected_resort
+
+
+    # Retrieve the resort object
+    resort = Resort.objects.get(name=resort_name)
+    ###Daily 
+    #Convert date column (which is the index) to datetime
+    daily_final.index = pd.to_datetime(daily_final.index)
+
+    #create bootstrap button column in df usind this datetime field.
+    # Correct usage of {% url %} tag
+
+    
+    # button_html = '<button class="myButton">hourly forecast</button>'
+    # daily_final['hourly_link'] = button_html
+
+# Assuming you have a DataFrame named daily_final
+    # button_html = '<button class="myButton" id="button_{index}">hourly forecast</button>'
+    # daily_final['hourly_link'] = [button_html.format(index=i) for i, _ in enumerate(daily_final.index)]
+    button_html_b = '<button class="myButton" id="button_{index}" data-date="{date}">hourly forecast</button>'
+    daily_final['hourly_link'] = [button_html_b.format(index=i, date=date.strftime('%Y-%m-%d')) for i, date in enumerate(daily_final.index)]
+
+    daily_base = daily_final[[
+        'night', 
+        'morning',
+        'afternoon', 
+        'evening', 
+        'base_temp',
+        'base_precip',
+        'base_winds',
+        'base_sleety_index', 
+        'hourly_link'
+        ]]
+
+    daily_mid = daily_final[[
+        'night',
+        'morning',
+        'afternoon',
+        'evening',
+        'mid_temp',
+        'mid_precip',
+        'mid_winds',
+        'mid_sleety_index', 
+        'hourly_link'
+    ]]
+
+    daily_top = daily_final[[
+        'night', 'morning', 'afternoon', 'evening',
+        'top_temp',
+        'top_precip',
+        'top_winds',
+        'top_sleety_index',
+        'hourly_link'
+    ]]
+
+    daily_base_f = daily_final[[
+        'night',
+        'morning',
+        'afternoon',
+        'evening',
+        'base_temp_f',
+        'base_precip',
+        'base_winds',
+        'base_sleety_index',
+        'hourly_link'
+    ]]
+
+    daily_mid_f = daily_final[[
+        'night',
+        'morning',
+        'afternoon',
+        'evening',
+        'mid_temp_f',
+        'mid_precip',
+        'mid_winds',
+        'mid_sleety_index',
+        'hourly_link'
+    ]]
+
+    daily_top_f = daily_final[[
+        'night', 'morning', 'afternoon', 'evening',
+        'top_temp_f',
+        'top_precip',
+        'top_winds',
+        'top_sleety_index',
+        'hourly_link'
+    ]]
+
+    daily_base = daily_base.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False,
+                                    formatters={('morning'): path_to_image_html,
+                                                ('afternoon'): path_to_image_html,
+                                                ('evening'): path_to_image_html,
+                                                ('night'): path_to_image_html})
+    daily_mid = daily_mid.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False,
+                                  formatters={('morning'): path_to_image_html,
+                                              ('afternoon'): path_to_image_html,
+                                              ('evening'): path_to_image_html,
+                                              ('night'): path_to_image_html})
+    daily_top = daily_top.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False,
+                                  formatters={('morning'): path_to_image_html,
+                                              ('afternoon'): path_to_image_html,
+                                              ('evening'): path_to_image_html,
+                                              ('night'): path_to_image_html})
+    daily_base_f = daily_base_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False,
+                                        formatters={('morning'): path_to_image_html,
+                                                    ('afternoon'): path_to_image_html,
+                                                    ('evening'): path_to_image_html,
+                                                    ('night'): path_to_image_html})
+    daily_mid_f = daily_mid_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False,
+                                      formatters={('morning'): path_to_image_html,
+                                                  ('afternoon'): path_to_image_html,
+                                                  ('evening'): path_to_image_html,
+                                                  ('night'): path_to_image_html})
+    daily_top_f = daily_top_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False,
+                                      formatters={('morning'): path_to_image_html,
+                                                  ('afternoon'): path_to_image_html,
+                                                  ('evening'): path_to_image_html,
+                                                  ('night'): path_to_image_html})
+    
+    #hourly defining the datatable 
+    df_base = df[['date','hour', 'weather_icon', 'weather_code_copy', 'base_temp_hourly_icons', 'base_feelslike_hourly_icons', 'base_precip', 'base_winds_hourly']]   
+    df_mid = df[['date','hour', 'weather_icon', 'weather_code_copy', 'mid_temp_hourly_icons', 'mid_feelslike_hourly_icons', 'mid_precip', 'mid_winds_hourly']]   
+    df_top = df[['date','hour', 'weather_icon', 'weather_code_copy', 'top_temp_hourly_icons', 'top_feelslike_hourly_icons', 'top_precip', 'top_winds_hourly']]   
+    df_base_f = df[['date','hour', 'weather_icon', 'weather_code_copy', 'base_temp_hourly_icons_f', 'base_feelslike_hourly_icons_f', 'base_precip', 'base_winds_hourly']]   
+    df_mid_f = df[['date','hour', 'weather_icon', 'weather_code_copy', 'mid_temp_hourly_icons_f', 'mid_feelslike_hourly_icons_f', 'mid_precip', 'mid_winds_hourly']]   
+    df_top_f = df[['date','hour', 'weather_icon', 'weather_code_copy', 'top_temp_hourly_icons_f', 'top_feelslike_hourly_icons_f', 'top_precip', 'top_winds_hourly']]   
+
+    # Group by 'date'
+    grouped_by_date_base = df_base.groupby('date')
+    grouped_by_date_mid = df_mid.groupby('date')
+    grouped_by_date_top = df_top.groupby('date')
+    grouped_by_date_base_f = df_base_f.groupby('date')
+    grouped_by_date_mid_f = df_mid_f.groupby('date')
+    grouped_by_date_top_f = df_top_f.groupby('date')
+
+    ### BASE CELCIUS HOURLY DATA #####
+    # Access data for a specific date, for example, the first date in your DataFram 
+    first_date_data = grouped_by_date_base.get_group(list(grouped_by_date_base.groups.keys())[0])
+    first_hourly_base = first_date_data[['hour', 'weather_icon', 'base_temp_hourly_icons', 'base_feelslike_hourly_icons', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    first_hourly_base.columns.name = first_hourly_base.index.name
+    first_hourly_base.index.name = None
+    
+    second_date_data = grouped_by_date_base.get_group(list(grouped_by_date_base.groups.keys())[1])
+    second_hourly_base = second_date_data[['hour', 'weather_icon', 'base_temp_hourly_icons', 'base_feelslike_hourly_icons', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    second_hourly_base.columns.name = second_hourly_base.index.name
+    second_hourly_base.index.name = None
+
+    third_date_data = grouped_by_date_base.get_group(list(grouped_by_date_base.groups.keys())[2])
+    third_hourly_base = third_date_data[['hour', 'weather_icon', 'base_temp_hourly_icons', 'base_feelslike_hourly_icons', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    third_hourly_base.columns.name = third_hourly_base.index.name
+    third_hourly_base.index.name = None
+
+    fourth_date_data = grouped_by_date_base.get_group(list(grouped_by_date_base.groups.keys())[3])
+    fourth_hourly_base = fourth_date_data[['hour', 'weather_icon', 'base_temp_hourly_icons', 'base_feelslike_hourly_icons', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    fourth_hourly_base.columns.name = fourth_hourly_base.index.name
+    fourth_hourly_base.index.name = None
+    
+    fifth_date_data = grouped_by_date_base.get_group(list(grouped_by_date_base.groups.keys())[4])
+    fifth_hourly_base = fifth_date_data[['hour', 'weather_icon', 'base_temp_hourly_icons', 'base_feelslike_hourly_icons', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    fifth_hourly_base.columns.name = fifth_hourly_base.index.name
+    fifth_hourly_base.index.name = None
+    
+    sixth_date_data = grouped_by_date_base.get_group(list(grouped_by_date_base.groups.keys())[5])
+    sixth_hourly_base = sixth_date_data[['hour', 'weather_icon', 'base_temp_hourly_icons', 'base_feelslike_hourly_icons', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    sixth_hourly_base.columns.name = sixth_hourly_base.index.name
+    sixth_hourly_base.index.name = None
+    
+    seventh_date_data = grouped_by_date_base.get_group(list(grouped_by_date_base.groups.keys())[6])
+    seventh_hourly_base = seventh_date_data[['hour', 'weather_icon', 'base_temp_hourly_icons', 'base_feelslike_hourly_icons', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    seventh_hourly_base.columns.name = seventh_hourly_base.index.name
+    seventh_hourly_base.index.name = None
+    
+    eighth_date_data = grouped_by_date_base.get_group(list(grouped_by_date_base.groups.keys())[7])
+    eighth_hourly_base = eighth_date_data[['hour', 'weather_icon', 'base_temp_hourly_icons', 'base_feelslike_hourly_icons', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    eighth_hourly_base.columns.name = eighth_hourly_base.index.name
+    eighth_hourly_base.index.name = None
+    
+    ninth_date_data = grouped_by_date_base.get_group(list(grouped_by_date_base.groups.keys())[8])
+    ninth_hourly_base = ninth_date_data[['hour', 'weather_icon', 'base_temp_hourly_icons', 'base_feelslike_hourly_icons', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    ninth_hourly_base.columns.name = ninth_hourly_base.index.name
+    ninth_hourly_base.index.name = None
+    
+    tenth_date_data = grouped_by_date_base.get_group(list(grouped_by_date_base.groups.keys())[9])
+    tenth_hourly_base = tenth_date_data[['hour', 'weather_icon', 'base_temp_hourly_icons', 'base_feelslike_hourly_icons', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    tenth_hourly_base.columns.name = tenth_hourly_base.index.name
+    tenth_hourly_base.index.name = None
+
+    ### MID CELCIUS HOURLY DATA #####
+    # Access data for a specific date, for example, the first date in your DataFram 
+    first_date_data = grouped_by_date_mid.get_group(list(grouped_by_date_mid.groups.keys())[0])
+    first_hourly_mid = first_date_data[['hour', 'weather_icon', 'mid_temp_hourly_icons', 'mid_feelslike_hourly_icons', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    first_hourly_mid.columns.name = first_hourly_mid.index.name
+    first_hourly_mid.index.name = None
+    
+    second_date_data = grouped_by_date_mid.get_group(list(grouped_by_date_mid.groups.keys())[1])
+    second_hourly_mid = second_date_data[['hour', 'weather_icon', 'mid_temp_hourly_icons', 'mid_feelslike_hourly_icons', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    second_hourly_mid.columns.name = first_hourly_mid.index.name
+    second_hourly_mid.index.name = None
+
+    third_date_data = grouped_by_date_mid.get_group(list(grouped_by_date_mid.groups.keys())[2])
+    third_hourly_mid = third_date_data[['hour', 'weather_icon', 'mid_temp_hourly_icons', 'mid_feelslike_hourly_icons', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    third_hourly_mid.columns.name = first_hourly_mid.index.name
+    third_hourly_mid.index.name = None
+
+    fourth_date_data = grouped_by_date_mid.get_group(list(grouped_by_date_mid.groups.keys())[3])
+    fourth_hourly_mid = fourth_date_data[['hour', 'weather_icon', 'mid_temp_hourly_icons', 'mid_feelslike_hourly_icons', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    fourth_hourly_mid.columns.name = fourth_hourly_mid.index.name
+    fourth_hourly_mid.index.name = None
+    
+    fifth_date_data = grouped_by_date_mid.get_group(list(grouped_by_date_mid.groups.keys())[4])
+    fifth_hourly_mid = fifth_date_data[['hour', 'weather_icon', 'mid_temp_hourly_icons', 'mid_feelslike_hourly_icons', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    fifth_hourly_mid.columns.name = fifth_hourly_mid.index.name
+    fifth_hourly_mid.index.name = None
+    
+    sixth_date_data = grouped_by_date_mid.get_group(list(grouped_by_date_mid.groups.keys())[5])
+    sixth_hourly_mid = sixth_date_data[['hour', 'weather_icon', 'mid_temp_hourly_icons', 'mid_feelslike_hourly_icons', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    sixth_hourly_mid.columns.name = sixth_hourly_mid.index.name
+    sixth_hourly_mid.index.name = None
+    
+    seventh_date_data = grouped_by_date_mid.get_group(list(grouped_by_date_mid.groups.keys())[6])
+    seventh_hourly_mid = seventh_date_data[['hour', 'weather_icon', 'mid_temp_hourly_icons', 'mid_feelslike_hourly_icons', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    seventh_hourly_mid.columns.name = seventh_hourly_mid.index.name
+    seventh_hourly_mid.index.name = None
+    
+    eighth_date_data = grouped_by_date_mid.get_group(list(grouped_by_date_mid.groups.keys())[7])
+    eighth_hourly_mid = eighth_date_data[['hour', 'weather_icon', 'mid_temp_hourly_icons', 'mid_feelslike_hourly_icons', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    eighth_hourly_mid.columns.name = eighth_hourly_mid.index.name
+    eighth_hourly_mid.index.name = None
+    
+    ninth_date_data = grouped_by_date_mid.get_group(list(grouped_by_date_mid.groups.keys())[8])
+    ninth_hourly_mid = ninth_date_data[['hour', 'weather_icon', 'mid_temp_hourly_icons', 'mid_feelslike_hourly_icons', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    ninth_hourly_mid.columns.name = ninth_hourly_mid.index.name
+    ninth_hourly_mid.index.name = None
+    
+    tenth_date_data = grouped_by_date_mid.get_group(list(grouped_by_date_mid.groups.keys())[9])
+    tenth_hourly_mid = tenth_date_data[['hour', 'weather_icon', 'mid_temp_hourly_icons', 'mid_feelslike_hourly_icons', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    tenth_hourly_mid.columns.name = tenth_hourly_mid.index.name
+    tenth_hourly_mid.index.name = None
+
+    ### TOP CELCIUS HOURLY DATA #####
+# Access data for a specific date, for example, the first date in your DataFram 
+    ### TOP CELCIUS HOURLY DATA #####
+# Access data for a specific date, for example, the first date in your DataFram 
+    first_date_data = grouped_by_date_top.get_group(list(grouped_by_date_top.groups.keys())[0])
+    first_hourly_top = first_date_data[['hour', 'weather_icon', 'top_temp_hourly_icons', 'top_feelslike_hourly_icons', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    first_hourly_top.columns.name = first_hourly_top.index.name
+    first_hourly_top.index.name = None
+
+    second_date_data = grouped_by_date_top.get_group(list(grouped_by_date_top.groups.keys())[1])
+    second_hourly_top = second_date_data[['hour', 'weather_icon', 'top_temp_hourly_icons', 'top_feelslike_hourly_icons', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    second_hourly_top.columns.name = second_hourly_top.index.name
+    second_hourly_top.index.name = None
+
+    third_date_data = grouped_by_date_top.get_group(list(grouped_by_date_top.groups.keys())[2])
+    third_hourly_top = third_date_data[['hour', 'weather_icon', 'top_temp_hourly_icons', 'top_feelslike_hourly_icons', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    third_hourly_top.columns.name = third_hourly_top.index.name
+    third_hourly_top.index.name = None
+
+    fourth_date_data = grouped_by_date_top.get_group(list(grouped_by_date_top.groups.keys())[3])
+    fourth_hourly_top = fourth_date_data[['hour', 'weather_icon', 'top_temp_hourly_icons', 'top_feelslike_hourly_icons', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    fourth_hourly_top.columns.name = fourth_hourly_top.index.name
+    fourth_hourly_top.index.name = None
+
+    fifth_date_data = grouped_by_date_top.get_group(list(grouped_by_date_top.groups.keys())[4])
+    fifth_hourly_top = fifth_date_data[['hour', 'weather_icon', 'top_temp_hourly_icons', 'top_feelslike_hourly_icons', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    fifth_hourly_top.columns.name = fifth_hourly_top.index.name
+    fifth_hourly_top.index.name = None
+
+    sixth_date_data = grouped_by_date_top.get_group(list(grouped_by_date_top.groups.keys())[5])
+    sixth_hourly_top = sixth_date_data[['hour', 'weather_icon', 'top_temp_hourly_icons', 'top_feelslike_hourly_icons', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    sixth_hourly_top.columns.name = sixth_hourly_top.index.name
+    sixth_hourly_top.index.name = None
+
+    seventh_date_data = grouped_by_date_top.get_group(list(grouped_by_date_top.groups.keys())[6])
+    seventh_hourly_top = seventh_date_data[['hour', 'weather_icon', 'top_temp_hourly_icons', 'top_feelslike_hourly_icons', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    seventh_hourly_top.columns.name = seventh_hourly_top.index.name
+    seventh_hourly_top.index.name = None
+
+    eighth_date_data = grouped_by_date_top.get_group(list(grouped_by_date_top.groups.keys())[7])
+    eighth_hourly_top = eighth_date_data[['hour', 'weather_icon', 'top_temp_hourly_icons', 'top_feelslike_hourly_icons', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    eighth_hourly_top.columns.name = eighth_hourly_top.index.name
+    eighth_hourly_top.index.name = None
+
+    ninth_date_data = grouped_by_date_top.get_group(list(grouped_by_date_top.groups.keys())[8])
+    ninth_hourly_top = ninth_date_data[['hour', 'weather_icon', 'top_temp_hourly_icons', 'top_feelslike_hourly_icons', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    ninth_hourly_top.columns.name = ninth_hourly_top.index.name
+    ninth_hourly_top.index.name = None
+
+    tenth_date_data = grouped_by_date_top.get_group(list(grouped_by_date_top.groups.keys())[9])
+    tenth_hourly_top = tenth_date_data[['hour', 'weather_icon', 'top_temp_hourly_icons', 'top_feelslike_hourly_icons', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    tenth_hourly_top.columns.name = tenth_hourly_top.index.name
+    tenth_hourly_top.index.name = None
+
+    ### BASE FAHRENHEIT HOURLY DATA #####
+    # Access data for a specific date, for example, the first date in your DataFram 
+    first_date_data_f = grouped_by_date_base_f.get_group(list(grouped_by_date_base_f.groups.keys())[0])
+    first_hourly_base_f = first_date_data_f[['hour', 'weather_icon', 'base_temp_hourly_icons_f', 'base_feelslike_hourly_icons_f', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    first_hourly_base_f.columns.name = first_hourly_base_f.index.name
+    first_hourly_base_f.index.name = None
+    
+    second_date_data_f = grouped_by_date_base_f.get_group(list(grouped_by_date_base_f.groups.keys())[1])
+    second_hourly_base_f = second_date_data_f[['hour', 'weather_icon', 'base_temp_hourly_icons_f', 'base_feelslike_hourly_icons_f', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    second_hourly_base_f.columns.name = second_hourly_base_f.index.name
+    second_hourly_base_f.index.name = None
+
+    third_date_data_f = grouped_by_date_base_f.get_group(list(grouped_by_date_base_f.groups.keys())[2])
+    third_hourly_base_f = third_date_data_f[['hour', 'weather_icon', 'base_temp_hourly_icons_f', 'base_feelslike_hourly_icons_f', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    third_hourly_base_f.columns.name = third_hourly_base_f.index.name
+    third_hourly_base_f.index.name = None
+
+    fourth_date_data_f = grouped_by_date_base_f.get_group(list(grouped_by_date_base_f.groups.keys())[3])
+    fourth_hourly_base_f = fourth_date_data_f[['hour', 'weather_icon', 'base_temp_hourly_icons_f', 'base_feelslike_hourly_icons_f', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    fourth_hourly_base_f.columns.name = fourth_hourly_base_f.index.name
+    fourth_hourly_base_f.index.name = None
+    
+    fifth_date_data_f = grouped_by_date_base_f.get_group(list(grouped_by_date_base_f.groups.keys())[4])
+    fifth_hourly_base_f = fifth_date_data_f[['hour', 'weather_icon', 'base_temp_hourly_icons_f', 'base_feelslike_hourly_icons_f', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    fifth_hourly_base_f.columns.name = fifth_hourly_base_f.index.name
+    fifth_hourly_base_f.index.name = None
+    
+    sixth_date_data_f = grouped_by_date_base_f.get_group(list(grouped_by_date_base_f.groups.keys())[5])
+    sixth_hourly_base_f = sixth_date_data_f[['hour', 'weather_icon', 'base_temp_hourly_icons_f', 'base_feelslike_hourly_icons_f', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    sixth_hourly_base_f.columns.name = sixth_hourly_base_f.index.name
+    sixth_hourly_base_f.index.name = None
+    
+    seventh_date_data_f = grouped_by_date_base_f.get_group(list(grouped_by_date_base_f.groups.keys())[6])
+    seventh_hourly_base_f = seventh_date_data_f[['hour', 'weather_icon', 'base_temp_hourly_icons_f', 'base_feelslike_hourly_icons_f', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    seventh_hourly_base_f.columns.name = seventh_hourly_base_f.index.name
+    seventh_hourly_base_f.index.name = None
+    
+    eighth_date_data_f = grouped_by_date_base_f.get_group(list(grouped_by_date_base_f.groups.keys())[7])
+    eighth_hourly_base_f = eighth_date_data_f[['hour', 'weather_icon', 'base_temp_hourly_icons_f', 'base_feelslike_hourly_icons_f', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    eighth_hourly_base_f.columns.name = eighth_hourly_base_f.index.name
+    eighth_hourly_base_f.index.name = None
+    
+    ninth_date_data_f = grouped_by_date_base_f.get_group(list(grouped_by_date_base_f.groups.keys())[8])
+    ninth_hourly_base_f = ninth_date_data_f[['hour', 'weather_icon', 'base_temp_hourly_icons_f', 'base_feelslike_hourly_icons_f', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    ninth_hourly_base_f.columns.name = ninth_hourly_base_f.index.name
+    ninth_hourly_base_f.index.name = None
+    
+    tenth_date_data_f = grouped_by_date_base_f.get_group(list(grouped_by_date_base_f.groups.keys())[9])
+    tenth_hourly_base_f = tenth_date_data_f[['hour', 'weather_icon', 'base_temp_hourly_icons_f', 'base_feelslike_hourly_icons_f', 'base_precip', 'base_winds_hourly']].set_index('hour')
+    tenth_hourly_base_f.columns.name = tenth_hourly_base_f.index.name
+    tenth_hourly_base_f.index.name = None
+
+    ### MID fahrenheit HOURLY DATA #####
+# Access data for a specific date, for example, the first date in your DataFrame
+    first_date_data_f = grouped_by_date_mid_f.get_group(list(grouped_by_date_mid_f.groups.keys())[0])
+    first_hourly_mid_f = first_date_data_f[['hour', 'weather_icon', 'mid_temp_hourly_icons_f', 'mid_feelslike_hourly_icons_f', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    first_hourly_mid_f.columns.name = first_hourly_mid_f.index.name
+    first_hourly_mid_f.index.name = None
+
+    second_date_data_f = grouped_by_date_mid_f.get_group(list(grouped_by_date_mid_f.groups.keys())[1])
+    second_hourly_mid_f = second_date_data_f[['hour', 'weather_icon', 'mid_temp_hourly_icons_f', 'mid_feelslike_hourly_icons_f', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    second_hourly_mid_f.columns.name = second_hourly_mid_f.index.name
+    second_hourly_mid_f.index.name = None
+
+    third_date_data_f = grouped_by_date_mid_f.get_group(list(grouped_by_date_mid_f.groups.keys())[2])
+    third_hourly_mid_f = third_date_data_f[['hour', 'weather_icon', 'mid_temp_hourly_icons_f', 'mid_feelslike_hourly_icons_f', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    third_hourly_mid_f.columns.name = third_hourly_mid_f.index.name
+    third_hourly_mid_f.index.name = None
+
+    fourth_date_data_f = grouped_by_date_mid_f.get_group(list(grouped_by_date_mid_f.groups.keys())[3])
+    fourth_hourly_mid_f = fourth_date_data_f[['hour', 'weather_icon', 'mid_temp_hourly_icons_f', 'mid_feelslike_hourly_icons_f', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    fourth_hourly_mid_f.columns.name = fourth_hourly_mid_f.index.name
+    fourth_hourly_mid_f.index.name = None
+
+    fifth_date_data_f = grouped_by_date_mid_f.get_group(list(grouped_by_date_mid_f.groups.keys())[4])
+    fifth_hourly_mid_f = fifth_date_data_f[['hour', 'weather_icon', 'mid_temp_hourly_icons_f', 'mid_feelslike_hourly_icons_f', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    fifth_hourly_mid_f.columns.name = fifth_hourly_mid_f.index.name
+    fifth_hourly_mid_f.index.name = None
+
+    sixth_date_data_f = grouped_by_date_mid_f.get_group(list(grouped_by_date_mid_f.groups.keys())[5])
+    sixth_hourly_mid_f = sixth_date_data_f[['hour', 'weather_icon', 'mid_temp_hourly_icons_f', 'mid_feelslike_hourly_icons_f', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    sixth_hourly_mid_f.columns.name = sixth_hourly_mid_f.index.name
+    sixth_hourly_mid_f.index.name = None
+
+    seventh_date_data_f = grouped_by_date_mid_f.get_group(list(grouped_by_date_mid_f.groups.keys())[6])
+    seventh_hourly_mid_f = seventh_date_data_f[['hour', 'weather_icon', 'mid_temp_hourly_icons_f', 'mid_feelslike_hourly_icons_f', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    seventh_hourly_mid_f.columns.name = seventh_hourly_mid_f.index.name
+    seventh_hourly_mid_f.index.name = None
+
+    eighth_date_data_f = grouped_by_date_mid_f.get_group(list(grouped_by_date_mid_f.groups.keys())[7])
+    eighth_hourly_mid_f = eighth_date_data_f[['hour', 'weather_icon', 'mid_temp_hourly_icons_f', 'mid_feelslike_hourly_icons_f', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    eighth_hourly_mid_f.columns.name = eighth_hourly_mid_f.index.name
+    eighth_hourly_mid_f.index.name = None
+
+    ninth_date_data_f = grouped_by_date_mid_f.get_group(list(grouped_by_date_mid_f.groups.keys())[8])
+    ninth_hourly_mid_f = ninth_date_data_f[['hour', 'weather_icon', 'mid_temp_hourly_icons_f', 'mid_feelslike_hourly_icons_f', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    ninth_hourly_mid_f.columns.name = ninth_hourly_mid_f.index.name
+    ninth_hourly_mid_f.index.name = None
+
+    tenth_date_data_f = grouped_by_date_mid_f.get_group(list(grouped_by_date_mid_f.groups.keys())[9])
+    tenth_hourly_mid_f = tenth_date_data_f[['hour', 'weather_icon', 'mid_temp_hourly_icons_f', 'mid_feelslike_hourly_icons_f', 'mid_precip', 'mid_winds_hourly']].set_index('hour')
+    tenth_hourly_mid_f.columns.name = tenth_hourly_mid_f.index.name
+    tenth_hourly_mid_f.index.name = None
+
+    #TOP FAHRENHEIT
+
+    first_date_data_f = grouped_by_date_top_f.get_group(list(grouped_by_date_top_f.groups.keys())[0])
+    first_hourly_top_f = first_date_data_f[['hour', 'weather_icon', 'top_temp_hourly_icons_f', 'top_feelslike_hourly_icons_f', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    first_hourly_top_f.columns.name = first_hourly_top_f.index.name
+    first_hourly_top_f.index.name = None
+
+    second_date_data_f = grouped_by_date_top_f.get_group(list(grouped_by_date_top_f.groups.keys())[1])
+    second_hourly_top_f = second_date_data_f[['hour', 'weather_icon', 'top_temp_hourly_icons_f', 'top_feelslike_hourly_icons_f', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    second_hourly_top_f.columns.name = second_hourly_top_f.index.name
+    second_hourly_top_f.index.name = None
+
+    third_date_data_f = grouped_by_date_top_f.get_group(list(grouped_by_date_top_f.groups.keys())[2])
+    third_hourly_top_f = third_date_data_f[['hour', 'weather_icon', 'top_temp_hourly_icons_f', 'top_feelslike_hourly_icons_f', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    third_hourly_top_f.columns.name = third_hourly_top_f.index.name
+    third_hourly_top_f.index.name = None
+
+    fourth_date_data_f = grouped_by_date_top_f.get_group(list(grouped_by_date_top_f.groups.keys())[3])
+    fourth_hourly_top_f = fourth_date_data_f[['hour', 'weather_icon', 'top_temp_hourly_icons_f', 'top_feelslike_hourly_icons_f', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    fourth_hourly_top_f.columns.name = fourth_hourly_top_f.index.name
+    fourth_hourly_top_f.index.name = None
+
+    fifth_date_data_f = grouped_by_date_top_f.get_group(list(grouped_by_date_top_f.groups.keys())[4])
+    fifth_hourly_top_f = fifth_date_data_f[['hour', 'weather_icon', 'top_temp_hourly_icons_f', 'top_feelslike_hourly_icons_f', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    fifth_hourly_top_f.columns.name = fifth_hourly_top_f.index.name
+    fifth_hourly_top_f.index.name = None
+
+    sixth_date_data_f = grouped_by_date_top_f.get_group(list(grouped_by_date_top_f.groups.keys())[5])
+    sixth_hourly_top_f = sixth_date_data_f[['hour', 'weather_icon', 'top_temp_hourly_icons_f', 'top_feelslike_hourly_icons_f', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    sixth_hourly_top_f.columns.name = sixth_hourly_top_f.index.name
+    sixth_hourly_top_f.index.name = None
+
+    seventh_date_data_f = grouped_by_date_top_f.get_group(list(grouped_by_date_top_f.groups.keys())[6])
+    seventh_hourly_top_f = seventh_date_data_f[['hour', 'weather_icon', 'top_temp_hourly_icons_f', 'top_feelslike_hourly_icons_f', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    seventh_hourly_top_f.columns.name = seventh_hourly_top_f.index.name
+    seventh_hourly_top_f.index.name = None
+
+    eighth_date_data_f = grouped_by_date_top_f.get_group(list(grouped_by_date_top_f.groups.keys())[7])
+    eighth_hourly_top_f = eighth_date_data_f[['hour', 'weather_icon', 'top_temp_hourly_icons_f', 'top_feelslike_hourly_icons_f', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    eighth_hourly_top_f.columns.name = eighth_hourly_top_f.index.name
+    eighth_hourly_top_f.index.name = None
+
+    ninth_date_data_f = grouped_by_date_top_f.get_group(list(grouped_by_date_top_f.groups.keys())[8])
+    ninth_hourly_top_f = ninth_date_data_f[['hour', 'weather_icon', 'top_temp_hourly_icons_f', 'top_feelslike_hourly_icons_f', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    ninth_hourly_top_f.columns.name = ninth_hourly_top_f.index.name
+    ninth_hourly_top_f.index.name = None
+
+    tenth_date_data_f = grouped_by_date_top_f.get_group(list(grouped_by_date_top_f.groups.keys())[9])
+    tenth_hourly_top_f = tenth_date_data_f[['hour', 'weather_icon', 'top_temp_hourly_icons_f', 'top_feelslike_hourly_icons_f', 'top_precip', 'top_winds_hourly']].set_index('hour')
+    tenth_hourly_top_f.columns.name = tenth_hourly_top_f.index.name
+    tenth_hourly_top_f.index.name = None
+
+    #####FINAL RENDERED HOURLY DF's##########
+
+
+    dataframes_base = {
+    'first_hourly_base': first_hourly_base.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+    'second_hourly_base': second_hourly_base.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+    'third_hourly_base': third_hourly_base.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+    'fourth_hourly_base' : fourth_hourly_base.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+    'fifth_hourly_base': fifth_hourly_base.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+    'sixth_hourly_base': sixth_hourly_base.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+    'seventh_hourly_base': seventh_hourly_base.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+    'eighth_hourly_base': eighth_hourly_base.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+    'ninth_hourly_base': ninth_hourly_base.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+    'tenth_hourly_base':tenth_hourly_base.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),             
+    }
+    
+    dataframes_mid = {
+        'first_hourly_mid': first_hourly_mid.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+        'second_hourly_mid' : second_hourly_mid.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+        'third_hourly_mid' : third_hourly_mid.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+        'fourth_hourly_mid' : fourth_hourly_mid.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+        'fifth_hourly_mid' : fifth_hourly_mid.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+        'sixth_hourly_mid' : sixth_hourly_mid.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+        'seventh_hourly_mid' : seventh_hourly_mid.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+        'eighth_hourly_mid' : eighth_hourly_mid.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+        'ninth_hourly_mid' : ninth_hourly_mid.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+        'tenth_hourly_mid' : tenth_hourly_mid.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html}),
+    }
+
+    dataframes_top = {
+    'first_hourly_top': first_hourly_top.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'second_hourly_top': second_hourly_top.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'third_hourly_top': third_hourly_top.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'fourth_hourly_top': fourth_hourly_top.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'fifth_hourly_top': fifth_hourly_top.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'sixth_hourly_top': sixth_hourly_top.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'seventh_hourly_top': seventh_hourly_top.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'eighth_hourly_top': eighth_hourly_top.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'ninth_hourly_top': ninth_hourly_top.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'tenth_hourly_top': tenth_hourly_top.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+}
+    
+    dataframes_base_f = {
+    'first_hourly_base_f': first_hourly_base_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'second_hourly_base_f': second_hourly_base_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'third_hourly_base_f': third_hourly_base_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'fourth_hourly_base_f': fourth_hourly_base_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'fifth_hourly_base_f': fifth_hourly_base_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'sixth_hourly_base_f': sixth_hourly_base_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'seventh_hourly_base_f': seventh_hourly_base_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'eighth_hourly_base_f': eighth_hourly_base_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'ninth_hourly_base_f': ninth_hourly_base_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'tenth_hourly_base_f': tenth_hourly_base_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+}
+
+    dataframes_mid_f = {
+    'first_hourly_mid_f': first_hourly_mid_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'second_hourly_mid_f': second_hourly_mid_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'third_hourly_mid_f': third_hourly_mid_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'fourth_hourly_mid_f': fourth_hourly_mid_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'fifth_hourly_mid_f': fifth_hourly_mid_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'sixth_hourly_mid_f': sixth_hourly_mid_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'seventh_hourly_mid_f': seventh_hourly_mid_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'eighth_hourly_mid_f': eighth_hourly_mid_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'ninth_hourly_mid_f': ninth_hourly_mid_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'tenth_hourly_mid_f': tenth_hourly_mid_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+}
+
+    dataframes_top_f = {
+    'first_hourly_top_f': first_hourly_top_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'second_hourly_top_f': second_hourly_top_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'third_hourly_top_f': third_hourly_top_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'fourth_hourly_top_f': fourth_hourly_top_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'fifth_hourly_top_f': fifth_hourly_top_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'sixth_hourly_top_f': sixth_hourly_top_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'seventh_hourly_top_f': seventh_hourly_top_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'eighth_hourly_top_f': eighth_hourly_top_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'ninth_hourly_top_f': ninth_hourly_top_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+    'tenth_hourly_top_f': tenth_hourly_top_f.to_html(classes='table table-striped table-bordered table-hover table-sm', escape=False, formatters={'weather_icon': path_to_image_html}),
+}
+
+
+    df_hourly_mid_c = first_hourly_base.to_html(classes='table table-striped table-bordered table-hover table-sm',escape=False , formatters={'weather_icon':path_to_image_html})
+    resorts = Resort.objects.all()
+    
+    context = {
+    # 'daily_final': daily_final,
+    'selected_resort': selected_resort,
+    'dataframes_base':dataframes_base,
+    'dataframes_mid': dataframes_mid,
+    'dataframes_top': dataframes_top,
+    'dataframes_base_f':dataframes_base_f,
+    'dataframes_mid_f': dataframes_mid_f,
+    'dataframes_top_f': dataframes_top_f,
+    'df_review': df_hourly_mid_c,
+    'hourly_df': df.to_html(),
+    'daily_base': daily_base,
+    'daily_mid':daily_mid,
+    'daily_top':daily_top,
+    'daily_base_f': daily_base_f,
+    'daily_mid_f':daily_mid_f,
+    'daily_top_f':daily_top_f,
+    'resort': resort,
+    'resorts': resorts,
+}
+
+    # request.session['hourly_df'] = df
+    request.session['selected_resort'] = selected_resort.to_json()
+    df['datetime'] = df['datetime'].dt.strftime('%Y-%m-%d %H:%M:%S')
+
+    df = df[[
+    'datetime',
+    'precipitation',
+    'temperature_2m',
+    'temp_mid',
+    'temp_top',
+    'temperature_850hPa',
+    'base_snowfall_total',
+    'mid_snowfall_total',
+    'top_snowfall_total',
+    'base_cumulative_snowfall',
+    'mid_cumulative_snowfall',
+    'top_cumulative_snowfall',
+    'wind_speed_base',
+    'wind_gusts_base',
+    'wind_speed_mid',
+    'wind_gusts_mid',
+    'wind_speed_top',
+    'wind_gusts_top',
+    'cloud_cover',
+    'direct_radiation',
+    'feelslike_base_min',
+    'feelslike_mid_min',
+    'feelslike_top_min',
+    'feelslike_base_max'
+]]
+
+    df_dict = df.to_dict()
+    request.session['df'] = df_dict
+    request.session.save()
 
     return render(request, 'forecast.html', context)
 
-def snowfall_amount(temperature, precipitation_amt):
-    if temperature > 0:
-        result = 0
-    elif -2.78 <= temperature < 0:
-        result = precipitation_amt * 10
-    elif temperature > -6.66667:
-        result = precipitation_amt * 15
-    elif temperature > -9.44:
-        result = precipitation_amt * 20
-    elif temperature > -12.2222:
-        result = precipitation_amt * 30
-    elif temperature > -17.7778:
-        result = precipitation_amt * 50
+def graphs(request, selected_resort):
+    
+    serialized_resort_data = request.session.get('selected_resort')
+
+    if serialized_resort_data:
+        # Recreate the Resort object from the serialized data
+        selected_resort = Resort.from_json(serialized_resort_data)
     else:
-        result = precipitation_amt * 100
+        # Handle the case when 'selected_resort' is not in the session
+        selected_resort = None
 
-    return result
+    df_dict = request.session.get('df')
+    df = pd.DataFrame.from_dict(df_dict)
 
-def rainfall_amount(temperature, precipitation_amt):
-    if temperature > 0:
-        result = precipitation_amt
+    resort_name = selected_resort
+
+    # Retrieve the resort object
+    resort = Resort.objects.get(name=resort_name)
+
+    #processing data for temp array. 
+    df['time'] = pd.to_datetime(df['datetime'])
+
+    #create the only rain column 
+    df['only_rain_base'] = df.apply(lambda row: only_rain(row['precipitation'], row['temperature_2m']), axis=1)
+    df['only_rain_mid'] = df.apply(lambda row: only_rain(row['precipitation'], row['temp_mid']), axis=1)
+    df['only_rain_top'] = df.apply(lambda row: only_rain(row['precipitation'], row['temp_top']), axis=1)
+
+    # Sample data (replace this with your actual data)
+    hourly_temp_1500m = df['temperature_850hPa']
+    dates = df['time']
+
+    # Heights at 100m intervals from 0m to 4000m
+    heights = list(range(0, 4100, 100))
+
+    # Create a new DataFrame with heights as the index and dates as columns
+    new_df = pd.DataFrame(index=heights, columns=dates, dtype=float)
+
+    # Apply the function to calculate temperatures at different heights and fill the new DataFrame
+    for height in heights:
+        new_df.loc[height, :] = hourly_temp_1500m.apply(lambda x: calculate_temperature_for_array(x, height)).values
+
+    # Increase the interpolation range
+    interpolated_df = new_df.interpolate(method='cubic', axis=1, limit_area='inside', limit_direction='both', limit=5)
+
+    # Apply a rolling window for additional smoothing
+    smoothed_df = interpolated_df.rolling(window=5, axis=1, min_periods=1, center=True).mean()
+
+    # Convert the DataFrame to a NumPy array
+    data_array = smoothed_df.values
+    
+    # # creating graphs for base elevation in Celcius
+    df['snowmelt'] = df.apply(lambda row: estimate_snowmelt(row['temperature_2m'], row['only_rain_base']), axis=1)
+    base_hourly_snowfall = df['base_snowfall_total']
+    base_hourly_rainfall = df['only_rain_base']
+    base_cumulative_snowfall = df['base_cumulative_snowfall']
+    base_melt_adjusted_snowpack = calculate_melt_adjusted_base_snowpack(df)
+    # wind_speed_base = df['wind_speed_base']
+    # base_wind_gusts = df['wind_gusts_base']
+
+    elevation = 100  # Change this to your desired elevation
+
+    fig = make_subplots(
+        rows=5, 
+        cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.02,
+        subplot_titles=("Sunshine vs. Cloud", "Temperatures", "Rain vs. Snow", "Wind", "Sleety Index"),
+        row_heights=[0.45, 0.85, 0.35, 0.25, 0.1]  # Adjust these values as needed
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=df.time,
+            y=[50]*len(df),  # Baseline at y=100
+            mode='lines',
+            line=dict(width=0),  # Invisible line
+            showlegend=False,
+        )
+    )
+
+    # Create an area trace for cloud cover
+    fig.add_trace(
+        go.Scatter(
+            x=df.time,
+            y=df['cloud_cover'] + elevation-50,  # Varying thickness over time, elevated
+            fill='tonexty',  # Fill to next y-value
+            fillcolor='rgba(128, 128, 128, 0.5)',  # Semi-transparent grey
+            line=dict(color='rgba(128, 128, 128, 1)'),  # Grey line
+            line_shape='spline',  # This line makes the line rounded
+            name='Cloud Cover',
+            showlegend=False,
+        )
+    )
+    # Assuming df['direct_radiation'] contains the direct radiation data
+# Assuming df['direct_radiation'] contains the direct radiation data
+    for i in range(len(df)):
+        fig.add_trace(
+            go.Bar(
+                x=[df.time[i]],
+                y=[elevation-50],
+                marker=dict(
+                    color='yellow',
+                    line=dict(color='yellow', width=3),
+                    opacity=max(0, min(df['direct_radiation'][i] / max(df['direct_radiation']), 1))  # Normalize to [0,1]
+                ),
+                showlegend=False,
+                # hoverinfo='none'
+            ),
+            row=1,  # Change this to the row number where you want the bars
+            col=1
+        )
+
+
+    fig.add_trace(
+        go.Heatmap(
+            z=data_array,
+            x=smoothed_df.columns,
+            y=heights,
+            showscale=False,
+            colorscale='balance',
+            zmid=0,
+            showlegend=False,
+            colorbar=dict(showticklabels=False) 
+        ),
+        row=2, col=1
+    )
+    # Add the bar plot for mid_hourly_snowfall to the second subplot
+    fig.add_trace(
+        go.Bar(
+            x=df.time,
+            y=base_hourly_snowfall,
+            name='Base Hourly Snowfall',
+            marker=dict(color='blue'),
+            showlegend=False
+        ),
+        row=3, col=1
+    )
+
+    # Add the bar plot for mid_hourly_rainfall to the third subplot
+    fig.add_trace(
+        go.Bar(
+            x=df.time,
+            y=base_hourly_rainfall,
+            name='base Hourly Rainfall',
+            marker=dict(color='red'),
+            showlegend=False
+        ),
+        row=3, col=1
+    )
+    # Add the line plot for mid_cumulative_snowfall to the third subplot
+    fig.add_trace(
+        go.Line(
+            x=df.time,
+            y=base_melt_adjusted_snowpack,
+            name='base Cumulative Snowfall',
+            marker=dict(color='blue'),
+            showlegend=False
+        ),
+        row=3, col=1
+    )
+
+    # Smooth the data
+    smooth_window = 5
+    wind_speed_smooth = np.convolve(df['wind_speed_base'], np.ones(smooth_window)/smooth_window, mode='valid')
+    base_wind_gusts_smooth = np.convolve(df['wind_gusts_base'], np.ones(smooth_window)/smooth_window, mode='valid')
+
+    # Ensure gusts line does not go below wind speed line
+    base_wind_gusts_smooth = np.maximum(base_wind_gusts_smooth, wind_speed_smooth)
+
+    # Add the scatter plot for mid_wind_speed with a central line
+    fig.add_trace(
+        go.Scatter(
+            x=df['time'][smooth_window//2:-smooth_window//2+1],
+            y=wind_speed_smooth,
+            mode='lines',
+            name='base Wind Speed',
+            line=dict(color='green', shape='spline'),
+            showlegend=False
+        ),
+        row=4, col=1
+    )
+
+    # Add the scatter plot for mid_wind_gusts with confidence intervals
+    fig.add_trace(
+        go.Scatter(
+            x=df['time'][smooth_window//2:-smooth_window//2+1],
+            y=base_wind_gusts_smooth,
+            mode='lines',
+            name='Base Wind Gusts',
+            line=dict(color='purple', shape='spline'),
+            fill='tonexty',  # Fill to the line below (gusts line)
+            fillcolor='rgba(128,0,128,0.3)',  # Adjust color and opacity as needed
+            showlegend=False
+        ),
+        row=4, col=1
+    )
+            
+
+
+    def calculate_conditions(row):
+            
+            score = 0
+
+            # Sunny weather
+            if row['direct_radiation'] > 50:
+                score += 2
+                
+            # Cloud Cover
+            if row['cloud_cover'] <90:
+                score += 2
+
+            # Feelslike temp 
+            if row['feelslike_base_min'] > -10:
+                score += 3
+
+            # Low wind speed
+            if row['wind_speed_base'] < 15:  # Adjust the threshold as needed
+                score += 2
+
+            # Significant fresh snow in the last 24 hours
+            if row['base_cumulative_snowfall'] > 20:  # Adjust the threshold as needed
+                score += 3
+
+            return score
+        
+    # Add a new column 'sleety_score' to your DataFrame
+    df['sleety_score'] = df.apply(calculate_conditions, axis=1)
+
+    for i in range(len(df)):
+        fig.add_trace(
+            go.Bar(
+                x=[df.time[i]],
+                y=[elevation-90],
+                marker=dict(
+                    color='green',
+                    line=dict(color='green', width=3),
+                    opacity=df['sleety_score'][i] / max(df['sleety_score'])  # Normalize to [0,1]
+                ),
+                showlegend=False,
+    #             hoverinfo='none'
+            ),
+            row=5,  # Change this to the row number where you want the bars
+            col=1
+        )
+
+    # Add horizontal lines at 1500m, 2000m, and 2500m to the first subplot
+    fig.add_shape(type="line", x0=smoothed_df.columns[1], y0=resort.base, x1=smoothed_df.columns[-1], y1=resort.base, line=dict(color="Black", width=2, dash="dash"), row=2, col=1)
+    fig.add_shape(type="line", x0=smoothed_df.columns[1], y0=resort.mid, x1=smoothed_df.columns[-1], y1=resort.mid, line=dict(color="Black", width=2, dash="dash"), row=2, col=1)
+    fig.add_shape(type="line", x0=smoothed_df.columns[1], y0=resort.top, x1=smoothed_df.columns[-1], y1=resort.top, line=dict(color="Black", width=2, dash="dash"), row=2, col=1)
+
+    # Set labels and title
+    fig.update_layout(
+        title='Base Graphs',
+        xaxis_title='Datetime',
+        autosize=False,
+        width=1200,
+        height=900,
+        yaxis=dict(),
+        showlegend=False,
+    )
+
+    fig.update_coloraxes(showscale=False) 
+    # fig.update_yaxes(showticklabels=False)
+
+    # Show the plot
+    plot_base_c = plot(fig, output_type='div', include_plotlyjs=False, link_text='', show_link=False)
+
+    # ############################################
+    # #creating graphs for mid elevation in Celcius
+    # ############################################
+
+    df['snowmelt'] = df.apply(lambda row: estimate_snowmelt(row['temp_mid'], row['only_rain_mid']), axis=1)
+    mid_hourly_snowfall = df['mid_snowfall_total']
+    mid_hourly_rainfall = df['only_rain_mid']
+    mid_cumulative_snowfall = df['mid_cumulative_snowfall']
+    mid_melt_adjusted_snowpack = calculate_melt_adjusted_mid_snowpack(df)
+    wind_speed_mid = df['wind_speed_mid']
+    mid_wind_gusts = df['wind_gusts_mid']
+
+
+    elevation = 100  # Change this to your desired elevation
+
+    fig = make_subplots(
+        rows=5, 
+        cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.02,
+        subplot_titles=("Sunshine vs. Cloud", "Temperatures", "Rain vs. Snow", "Wind", "Sleety Index"),
+        row_heights=[0.45, 0.85, 0.35, 0.25, 0.1]  # Adjust these values as needed
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=df.time,
+            y=[50]*len(df),  # Baseline at y=100
+            mode='lines',
+            line=dict(width=0),  # Invisible line
+            showlegend=False,
+        )
+    )
+
+    # Create an area trace for cloud cover
+    fig.add_trace(
+        go.Scatter(
+            x=df.time,
+            y=df['cloud_cover'] + elevation-50,  # Varying thickness over time, elevated
+            fill='tonexty',  # Fill to next y-value
+            fillcolor='rgba(128, 128, 128, 0.5)',  # Semi-transparent grey
+            line=dict(color='rgba(128, 128, 128, 1)'),  # Grey line
+            line_shape='spline',  # This line makes the line rounded
+            name='Cloud Cover',
+            showlegend=False,
+        )
+    )
+    # Assuming df['direct_radiation'] contains the direct radiation data
+# Assuming df['direct_radiation'] contains the direct radiation data
+    for i in range(len(df)):
+        fig.add_trace(
+            go.Bar(
+                x=[df.time[i]],
+                y=[elevation-50],
+                marker=dict(
+                    color='yellow',
+                    line=dict(color='yellow', width=3),
+                    opacity=max(0, min(df['direct_radiation'][i] / max(df['direct_radiation']), 1))  # Normalize to [0,1]
+                ),
+                showlegend=False,
+                # hoverinfo='none'
+            ),
+            row=1,  # Change this to the row number where you want the bars
+            col=1
+        )
+
+    fig.add_trace(
+        go.Heatmap(
+            z=data_array,
+            x=smoothed_df.columns,
+            y=heights,
+            showscale=False,
+            colorscale='balance',
+            zmid=0,
+            showlegend=False,
+            colorbar=dict(showticklabels=False) 
+        ),
+        row=2, col=1
+    )
+    # Add the bar plot for mid_hourly_snowfall to the second subplot
+    fig.add_trace(
+        go.Bar(
+            x=df.time,
+            y=mid_hourly_snowfall,
+            name='Mid Hourly Snowfall',
+            marker=dict(color='blue'),
+            showlegend=False
+        ),
+        row=3, col=1
+    )
+
+    # Add the bar plot for mid_hourly_rainfall to the third subplot
+    fig.add_trace(
+        go.Bar(
+            x=df.time,
+            y=mid_hourly_rainfall,
+            name='Mid Hourly Rainfall',
+            marker=dict(color='red'),
+            showlegend=False
+        ),
+        row=3, col=1
+    )
+    # Add the line plot for mid_cumulative_snowfall to the third subplot
+    fig.add_trace(
+        go.Line(
+            x=df.time,
+            y=mid_melt_adjusted_snowpack,
+            name='Mid Cumulative Snowfall',
+            marker=dict(color='blue'),
+            showlegend=False
+        ),
+        row=3, col=1
+    )
+
+    # Smooth the data
+    smooth_window = 5
+    wind_speed_smooth = np.convolve(wind_speed_mid, np.ones(smooth_window)/smooth_window, mode='valid')
+    mid_wind_gusts_smooth = np.convolve(mid_wind_gusts, np.ones(smooth_window)/smooth_window, mode='valid')
+
+    # Ensure gusts line does not go below wind speed line
+    mid_wind_gusts_smooth = np.maximum(mid_wind_gusts_smooth, wind_speed_smooth)
+
+    # Add the scatter plot for mid_wind_speed with a central line
+    fig.add_trace(
+        go.Scatter(
+            x=df['time'][smooth_window//2:-smooth_window//2+1],
+            y=wind_speed_smooth,
+            mode='lines',
+            name='mid Wind Speed',
+            line=dict(color='green', shape='spline'),
+            showlegend=False
+        ),
+        row=4, col=1
+    )
+
+    # Add the scatter plot for mid_wind_gusts with confidence intervals
+    fig.add_trace(
+        go.Scatter(
+            x=df['time'][smooth_window//2:-smooth_window//2+1],
+            y=base_wind_gusts_smooth,
+            mode='lines',
+            name='Mid Wind Gusts',
+            line=dict(color='purple', shape='spline'),
+            fill='tonexty',  # Fill to the line below (gusts line)
+            fillcolor='rgba(128,0,128,0.3)',  # Adjust color and opacity as needed
+            showlegend=False
+        ),
+        row=4, col=1
+    )
+            
+    def calculate_conditions(row):
+            
+            score = 0
+
+            # Sunny weather
+            if row['direct_radiation'] > 50:
+                score += 2
+                
+            # Cloud Cover
+            if row['cloud_cover'] <90:
+                score += 2
+
+            # Feelslike temp 
+            if row['feelslike_base_min'] > -10:
+                score += 3
+
+            # Low wind speed
+            if row['wind_speed_mid'] < 15:  # Adjust the threshold as needed
+                score += 2
+
+            # Significant fresh snow in the last 24 hours
+            if row['mid_cumulative_snowfall'] > 20:  # Adjust the threshold as needed
+                score += 3
+
+            return score
+        
+    # Add a new column 'sleety_score' to your DataFrame
+    df['sleety_score'] = df.apply(calculate_conditions, axis=1)
+
+    for i in range(len(df)):
+        fig.add_trace(
+            go.Bar(
+                x=[df.time[i]],
+                y=[elevation-90],
+                marker=dict(
+                    color='green',
+                    line=dict(color='green', width=3),
+                    opacity=df['sleety_score'][i] / max(df['sleety_score'])  # Normalize to [0,1]
+                ),
+                showlegend=False,
+    #             hoverinfo='none'
+            ),
+            row=5,  # Change this to the row number where you want the bars
+            col=1
+        )
+
+    # Add horizontal lines at 1500m, 2000m, and 2500m to the first subplot
+    fig.add_shape(type="line", x0=smoothed_df.columns[1], y0=resort.base, x1=smoothed_df.columns[-1], y1=resort.base, line=dict(color="Black", width=2, dash="dash"), row=2, col=1)
+    fig.add_shape(type="line", x0=smoothed_df.columns[1], y0=resort.mid, x1=smoothed_df.columns[-1], y1=resort.mid, line=dict(color="Black", width=2, dash="dash"), row=2, col=1)
+    fig.add_shape(type="line", x0=smoothed_df.columns[1], y0=resort.top, x1=smoothed_df.columns[-1], y1=resort.top, line=dict(color="Black", width=2, dash="dash"), row=2, col=1)
+
+    # Set labels and title
+    fig.update_layout(
+        title='Mid Graphs',
+        xaxis_title='Datetime',
+        autosize=False,
+        width=1200,
+        height=900,
+        yaxis=dict(),
+        showlegend=False,
+    )
+
+    fig.update_coloraxes(showscale=False) 
+    # fig.update_yaxes(showticklabels=False)
+
+    # Show the plot
+    plot_mid_c = plot(fig, output_type='div', include_plotlyjs=False, link_text='', show_link=False)
+
+    # ############################################
+    # #creating graphs for top elevation in Celcius
+    # ############################################
+
+    df['snowmelt'] = df.apply(lambda row: estimate_snowmelt(row['temp_top'], row['only_rain_top']), axis=1)
+    top_hourly_snowfall = df['top_snowfall_total']
+    top_hourly_rainfall = df['only_rain_top']
+    top_cumulative_snowfall = df['top_cumulative_snowfall']
+    top_melt_adjusted_snowpack = calculate_melt_adjusted_top_snowpack(df)
+    wind_speed_top = df['wind_speed_top']
+    top_wind_gusts = df['wind_gusts_top']
+
+
+    elevation = 100  # Change this to your desired elevation
+
+    fig = make_subplots(
+        rows=5, 
+        cols=1, 
+        shared_xaxes=True, 
+        vertical_spacing=0.02,
+        subplot_titles=("Sunshine vs. Cloud", "Temperatures", "Rain vs. Snow", "Wind", "Sleety Index"),
+        row_heights=[0.45, 0.85, 0.35, 0.25, 0.1]  # Adjust these values as needed
+    )
+
+    fig.add_trace(
+        go.Scatter(
+            x=df.time,
+            y=[50]*len(df),  # Baseline at y=100
+            mode='lines',
+            line=dict(width=0),  # Invisible line
+            showlegend=False,
+        )
+    )
+
+    # Create an area trace for cloud cover
+    fig.add_trace(
+        go.Scatter(
+            x=df.time,
+            y=df['cloud_cover'] + elevation-50,  # Varying thickness over time, elevated
+            fill='tonexty',  # Fill to next y-value
+            fillcolor='rgba(128, 128, 128, 0.5)',  # Semi-transparent grey
+            line=dict(color='rgba(128, 128, 128, 1)'),  # Grey line
+            line_shape='spline',  # This line makes the line rounded
+            name='Cloud Cover',
+            showlegend=False,
+        )
+    )
+    # Assuming df['direct_radiation'] contains the direct radiation data
+# Assuming df['direct_radiation'] contains the direct radiation data
+    for i in range(len(df)):
+        fig.add_trace(
+            go.Bar(
+                x=[df.time[i]],
+                y=[elevation-50],
+                marker=dict(
+                    color='yellow',
+                    line=dict(color='yellow', width=3),
+                    opacity=max(0, min(df['direct_radiation'][i] / max(df['direct_radiation']), 1))  # Normalize to [0,1]
+                ),
+                showlegend=False,
+                # hoverinfo='none'
+            ),
+            row=1,  # Change this to the row number where you want the bars
+            col=1
+        )
+
+
+    fig.add_trace(
+        go.Heatmap(
+            z=data_array,
+            x=smoothed_df.columns,
+            y=heights,
+            showscale=False,
+            colorscale='balance',
+            zmid=0,
+            showlegend=False,
+            colorbar=dict(showticklabels=False) 
+        ),
+        row=2, col=1
+    )
+    # Add the bar plot for mid_hourly_snowfall to the second subplot
+    fig.add_trace(
+        go.Bar(
+            x=df.time,
+            y=top_hourly_snowfall,
+            name='Top Hourly Snowfall',
+            marker=dict(color='blue'),
+            showlegend=False
+        ),
+        row=3, col=1
+    )
+
+    # Add the bar plot for mid_hourly_rainfall to the third subplot
+    fig.add_trace(
+        go.Bar(
+            x=df.time,
+            y=top_hourly_rainfall,
+            name='Top Hourly Rainfall',
+            marker=dict(color='red'),
+            showlegend=False
+        ),
+        row=3, col=1
+    )
+    # Add the line plot for mid_cumulative_snowfall to the third subplot
+    fig.add_trace(
+        go.Line(
+            x=df.time,
+            y=top_melt_adjusted_snowpack,
+            name='Top Cumulative Snowfall',
+            marker=dict(color='blue'),
+            showlegend=False
+        ),
+        row=3, col=1
+    )
+
+    # Smooth the data
+    smooth_window = 5
+    wind_speed_smooth = np.convolve(wind_speed_top, np.ones(smooth_window)/smooth_window, mode='valid')
+    top_wind_gusts_smooth = np.convolve(top_wind_gusts, np.ones(smooth_window)/smooth_window, mode='valid')
+
+    # Ensure gusts line does not go below wind speed line
+    top_wind_gusts_smooth = np.maximum(top_wind_gusts_smooth, wind_speed_smooth)
+
+    # Add the scatter plot for mid_wind_speed with a central line
+    fig.add_trace(
+        go.Scatter(
+            x=df['time'][smooth_window//2:-smooth_window//2+1],
+            y=wind_speed_smooth,
+            mode='lines',
+            name='top Wind Speed',
+            line=dict(color='green', shape='spline'),
+            showlegend=False
+        ),
+        row=4, col=1
+    )
+
+    # Add the scatter plot for mid_wind_gusts with confidence intervals
+    fig.add_trace(
+        go.Scatter(
+            x=df['time'][smooth_window//2:-smooth_window//2+1],
+            y=top_wind_gusts_smooth,
+            mode='lines',
+            name='Top Wind Gusts',
+            line=dict(color='purple', shape='spline'),
+            fill='tonexty',  # Fill to the line below (gusts line)
+            fillcolor='rgba(128,0,128,0.3)',  # Adjust color and opacity as needed
+            showlegend=False
+        ),
+        row=4, col=1
+    )
+            
+    def calculate_conditions(row):
+            
+            score = 0
+
+            # Sunny weather
+            if row['direct_radiation'] > 50:
+                score += 2
+                
+            # Cloud Cover
+            if row['cloud_cover'] <90:
+                score += 2
+
+            # Feelslike temp 
+            if row['feelslike_top_min'] > -10:
+                score += 3
+
+            # Low wind speed
+            if row['wind_speed_top'] < 15:  # Adjust the threshold as needed
+                score += 2
+
+            # Significant fresh snow in the last 24 hours
+            if row['top_cumulative_snowfall'] > 20:  # Adjust the threshold as needed
+                score += 3
+
+            return score
+        
+    # Add a new column 'sleety_score' to your DataFrame
+    df['sleety_score'] = df.apply(calculate_conditions, axis=1)
+
+    for i in range(len(df)):
+        fig.add_trace(
+            go.Bar(
+                x=[df.time[i]],
+                y=[elevation-90],
+                marker=dict(
+                    color='green',
+                    line=dict(color='green', width=3),
+                    opacity=df['sleety_score'][i] / max(df['sleety_score'])  # Normalize to [0,1]
+                ),
+                showlegend=False,
+    #             hoverinfo='none'
+            ),
+            row=5,  # Change this to the row number where you want the bars
+            col=1
+        )
+
+    # Add horizontal lines at 1500m, 2000m, and 2500m to the first subplot
+    fig.add_shape(type="line", x0=smoothed_df.columns[1], y0=resort.base, x1=smoothed_df.columns[-1], y1=resort.base, line=dict(color="Black", width=2, dash="dash"), row=2, col=1)
+    fig.add_shape(type="line", x0=smoothed_df.columns[1], y0=resort.mid, x1=smoothed_df.columns[-1], y1=resort.mid, line=dict(color="Black", width=2, dash="dash"), row=2, col=1)
+    fig.add_shape(type="line", x0=smoothed_df.columns[1], y0=resort.top, x1=smoothed_df.columns[-1], y1=resort.top, line=dict(color="Black", width=2, dash="dash"), row=2, col=1)
+
+    # Set labels and title
+    fig.update_layout(
+        title='Top Graphs',
+        xaxis_title='Datetime',
+        autosize=False,
+        width=1200,
+        height=900,
+        yaxis=dict(),
+        showlegend=False,
+    )
+
+    fig.update_coloraxes(showscale=False) 
+    # fig.update_yaxes(showticklabels=False)
+
+    # Show the plot
+    plot_top_c = plot(fig, output_type='div', include_plotlyjs=False, link_text='', show_link=False)
+
+    if selected_resort is not None:
+        context = {
+            'selected_resort':selected_resort,
+            'df': df.to_html(),
+            'plot_base_c': plot_base_c,
+            'plot_mid_c': plot_mid_c,
+            'plot_top_c': plot_top_c,
+            # Add other context variables as needed
+        }
+        return render(request, 'graphs.html', context)
     else:
-        result = 0
-
-    return result
-
-def calculate_wind_chill(temperature, wind_speed):
-    wind_chill_celsius = 13.12 + 0.6215 * temperature - 11.37 * wind_speed**0.16 + 0.3965 * temperature * wind_speed**0.16
-    return wind_chill_celsius
+        # Handle the case where 'selected_resort_name' is not in the session
+        return HttpResponse("Error: 'selected_resort_name' not found in session.")
 
 def resort_list(request):
     country = request.GET.get('country')
     resort_list = Resort.objects.filter(country=country)
     context = {'resort_list': resort_list}
     return render(request, 'partials/modules.html', context)
-
-def get_time_of_day(hour):
-    if isinstance(hour, pd.Series):
-        # If 'hour' is a Series, apply the function element-wise
-        return hour.apply(get_time_of_day)
-    else:
-        # If 'hour' is a single value, determine the time of day
-        if 6 <= hour < 18:
-            return 'day'
-        else:
-            return 'night'
-
-def categorize_time(hour):
-    if 0 <= hour < 6:
-        return 'night'
-    elif 6 <= hour < 12:
-        return 'morning'
-    elif 12 <= hour < 18:
-        return 'afternoon'
-    else:
-        return 'evening'
-    
-def path_to_image_html(path):
-    return f'<img src="{path}" width="60" >'
 
 def resorts(request):
     country = request.GET.get('country')
@@ -511,3 +1435,6 @@ def resorts(request):
 
 def about(request):
     return render(request, 'about.html', {})
+
+
+

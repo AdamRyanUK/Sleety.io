@@ -6,47 +6,66 @@ Sleety Homepage
 {% block content %}
 <br>
 <br>
-<div class=" container">
-    <div class="row">
-        <div class="col">
-            <table class="table table-hover table-sm" style="width:100%">
-                <thead>
-                    <tr>
-                        <th>Resort</th>
-                        <th>3 day Snowfall Total</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for resort, snowfall_total in three_day_sorted_snowfall_totals %}
-                    <tr>
-                        <!-- Create a link for each resort name -->
-                        <td><a href="{% url 'forecast' %}?resort={{ resort }}">{{ resort }}</a></td>
-                        <td style="text-align: center;">{{ snowfall_total }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+<div class="container" style="max-width: 33.33%;">
+    <ul class="nav nav-tabs" id="myTabs">
+        <li class="nav-item">
+            <a class="nav-link active" id="three-day-tab" data-toggle="tab" href="#three-day">3 Day Snowfall</a>
+        </li>
+        <li class="nav-item">
+            <a class="nav-link" id="seven-day-tab" data-toggle="tab" href="#seven-day">7 Day Snowfall</a>
+        </li>
+    </ul>
+
+    <div class="tab-content">
+        <div class="tab-pane fade show active" id="three-day">
+            <div class="row">
+                <div class="col-md-4">
+                    <table class="table table-hover table-sm" style="width:100%">
+                        <thead>
+                            <tr>
+                                <th>Resort</th>
+                                <th>3 day Snowfall Total</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for resort, snowfall_total in three_day_sorted_snowfall_totals %}
+                            <tr>
+                                <td><a href="{% url 'forecast' %}?resort={{ resort }}">{{ resort }}</a></td>
+                                <td style="text-align: center;">{{ snowfall_total }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
-        <div class="col">
-            <table class="table table-hover table-sm" style="width:100%">
-                <thead>
-                    <tr>
-                        <th>Resort</th>
-                        <th>7 Day Snowfall Total</th>
-                    </tr>
-                </thead>
-                <tbody>
-                    {% for resort, snowfall_total in seven_day_sorted_snowfall_totals %}
-                    <tr>
-                        <!-- Create a link for each resort name -->
-                        <td><a href="{% url 'forecast' %}?resort={{ resort }}">{{ resort }}</a></td>
-                        <td style="text-align: center;">{{ snowfall_total }}</td>
-                    </tr>
-                    {% endfor %}
-                </tbody>
-            </table>
+
+        <div class="tab-pane fade" id="seven-day">
+            <div class="row">
+                <div class="col-md-4">
+                    <table class="table table-hover table-sm" style="width:100%">
+                        <thead>
+                            <tr>
+                                <th>Resort</th>
+                                <th>7 Day Snowfall Total</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            {% for resort, snowfall_total in seven_day_sorted_snowfall_totals %}
+                            <tr>
+                                <td><a href="{% url 'forecast' %}?resort={{ resort }}">{{ resort }}</a></td>
+                                <td style="text-align: center;">{{ snowfall_total }}</td>
+                            </tr>
+                            {% endfor %}
+                        </tbody>
+                    </table>
+                </div>
+            </div>
         </div>
-        <div class="col">
+    </div>
+</div>
+
+        <div class="col-md-4">
             <ul>
                 {% for blog in latest_blog_posts %}
                     <li><a href="{% url 'article-detail' blog.pk %}">{{ blog.title }}</a> - {{ blog.author }}<br>

@@ -29,5 +29,24 @@ weather_icons = {
     95: '/static/images/thunderstorm.png'
 }
 
-    # Add "_night" to the end of each file name for night time
+# Add "_night" to the end of each file name for night time
 weather_icons_night = {code: path.replace('.png', '_night.png') for code, path in weather_icons.items()}
+
+wind_direction_icons = {
+    0: '/static/images/wind_degrees/0.png',
+    45: '/static/images/wind_degrees/45.png',
+    90:'/static/images/wind_degrees/90.png',
+    120:'/static/images/wind_degrees/120.png',
+    180:'/static/images/wind_degrees/180.png',
+    225:'/static/images/wind_degrees/225.png',
+    270:'/static/images/wind_degrees/270.png',
+    315:'/static/images/wind_degrees/315.png',
+}
+temperature_icons = {}
+for temperature in range(-60, 45):
+    temperature_icons[temperature] = f'/static/images/temperatures_celcius/{temperature}.png'
+
+fahrenheit_icons = {}
+for temperature in range(-60, 45):
+    fahrenheit_icons[temperature] = f'/static/images/temperatures_fahrenheit/{temperature}.png'
+

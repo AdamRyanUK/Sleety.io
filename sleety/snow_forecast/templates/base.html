@@ -1,7 +1,9 @@
 {% load static %}
+
 <!doctype html>
 <html lang="en">
   <head>
+
    <!-- below is all the quickstart bootstrap suggested code in head -->
   <!-- Required meta tags -->
   <meta charset="utf-8">
@@ -18,21 +20,29 @@
   <meta http-equiv="X-UA-Compatible" content="ie=edge">
 
   <!-- jQuery and Bootstrap CSS -->
-  <script src="https://code.jquery.com/jquery-3.2.1.slim.min.js" integrity="sha384-KJ3o2DKtIkvYIK3UENzmM7KCkRr/rE9/Qpg6aAZGJwFDMVNA/GpGFF93hXpG5KkN" crossorigin="anonymous"></script>
+  <script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/popper.js/1.12.9/umd/popper.min.js" integrity="sha384-ApNbgh9B+Y1QKtv3Rn7W3mgPxhU9K/ScQsAP7hUibX39j7fakFPskvXusvfa0b4Q" crossorigin="anonymous"></script>
   <script src="https://stackpath.bootstrapcdn.com/bootstrap/4.4.1/js/bootstrap.min.js" integrity="sha384-wfSDF2E50Y2D1uUdj0O3uMBJnjuUD4Ih7YwaYd1iqfktj0Uod8GCExl3Og8ifwB6" crossorigin="anonymous"></script>
+
 
   <!-- Bootstrap Icons -->
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/bootstrap-icons@1.3.0/font/bootstrap-icons.css">
   
   <!-- HTMX -->
   <script src="https://unpkg.com/htmx.org@1.6.0"></script>
+
+  <!-- #basic custom.js file for forecast.html -->
+  <script src="{% static 'snow_forecast/js/custom.js' %}"></script>
+    <!-- for the plotly graphs -->
+  <script src="https://cdn.plot.ly/plotly-latest.min.js"></script>
+  
    
     <title>{% block title %} Sleety.io for Snow {% endblock %}</title>
 
   </head>
+  
   <body>
-
+  
     <!-- Upper Navbar -->
     <nav class="navbar navbar-expand-lg navbar-light py-0" style="background-color: #FFFFFF;">
         <a class="navbar-brand" href="{% url 'home' %}">
@@ -104,8 +114,7 @@
           </ul>
 
           <!-- Add the dropdown select menu to the navbar -->
-          <form class="form-inline my-2 my-lg-0" action="{% url 'forecast' %}" method="post">
-            {% csrf_token %}
+          <div class="form-inline my-2 my-lg-0">  
             
             <!-- First select for country -->
             <select class="custom-select mr-sm-2"
@@ -118,8 +127,8 @@
                     <option value="{{ country }}">{{ country }}</option>
                 {% endfor %}
             </select>
-        
-                <!-- Second select for resort -->
+            <form action="{% url 'forecast'  %}" method="get">
+              <!-- Second select for resort -->
             <div id="resort_names" class="mr-2">
                 {% include 'partials/resort_names.html' %}
             </div>
@@ -127,6 +136,7 @@
   <!-- Submit button -->
             <button type="submit" class="btn btn-primary active">Let it snow!</button>
             </form>
+          </div>
         
       </div>
   </div>
@@ -135,7 +145,7 @@
   <br>
   <div class="container">
   {% block content %}
-
+  <link href='{% static "sleety\static\css\styles.css" %}' rel='stylesheet' type='text/css'>
   {% endblock %}
   </div>
   

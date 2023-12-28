@@ -3,26 +3,75 @@
 Sleety Snow Forecast
 {% endblock %}
 
-
 {% block content %}
-<h1>Snow Forecast for {{ selected_resort_name }} </h1>
+
+
+<h1>Snow Forecast for {{ selected_resort }} </h1>
 <!-- Display Time and Temperature_2m -->
+ 
+<div class="btn-group" role="group" aria-label="Basic outlined example">
+  <button type="button" class="btn btn-outline-primary" id="baseBtn">Base</button>
+  <button type="button" class="btn btn-outline-primary" id="midBtn">Mid</button>
+  <button type="button" class="btn btn-outline-primary" id="topBtn">Top</button>
+</div>
+
 
 <div class="btn-group" role="group" aria-label="Basic outlined example">
-    <button type="button" class="btn btn-outline-primary">Base</button>
-    <button type="button" class="btn btn-outline-primary">Mid</button>
-    <button type="button" class="btn btn-outline-primary">Top</button>
-  </div>
+  <button type="button" class="btn btn-outline-primary" id="CBtn">°C</button>
+  <button type="button" class="btn btn-outline-primary" id="FBtn">°F</button>
+</div>
+
+
 </br>
-  <div class="btn-group" role="group" aria-label="Basic outlined example">
-    <button type="button" class="btn btn-outline-primary">°C</button>
-    <button type="button" class="btn btn-outline-primary">°F</button>
+
+
+<div id="daily_base">
+  {{ daily_base | safe }}
+</div>
+<div id="daily_mid">
+  {{ daily_mid | safe }}
+</div>
+<div id="daily_top">
+  {{ daily_top | safe }}
+</div>
+<div id="daily_base_f">
+  {{ daily_base_f | safe }}
+</div>
+<div id="daily_mid_f">
+  {{ daily_mid_f | safe }}
+</div>
+<div id="daily_top_f">
+  {{ daily_top_f | safe }}
+</div>
+
+<script type="text/javascript">
+  var dataframes_base = {{ dataframes_base | safe }};
+  var dataframes_mid = {{ dataframes_mid | safe }};
+  var dataframes_top = {{ dataframes_top | safe }};
+  var dataframes_base_f = {{ dataframes_base_f | safe }};
+  var dataframes_mid_f = {{ dataframes_mid_f | safe }};
+  var dataframes_top_f = {{ dataframes_top_f | safe }};
+</script>
+
+<!-- Modal -->
+<div class="modal fade" id="myModal" tabindex="-1" role="dialog" aria-labelledby="myModalLabel">
+  <div class="modal-dialog modal-xl" role="document">
+    <div class="modal-content">
+      <div class="modal-header">
+        <button type="button" class="close" data-dismiss="modal" aria-label="Close"><span aria-hidden="true">×</span></button>
+        <h4 class="modal-title" id="myModalLabel">Hourly forecast for {{ selected_day }} </h4>
+      </div>
+      <div class="modal-body" style="overflow-y: auto;" height="500px"> 
+        {{ first_hourly_base | safe }}
+      </div>
+      <div class="modal-footer">
+        <button type="button" class="btn btn-default" data-dismiss="modal">Close</button>
+        <button type="button" class="btn btn-primary">Save changes</button>
+      </div>
+    </div>
   </div>
-<br/>
-<br/>
+</div>
 
-{{ daily_final | safe }}
-
-
+{{ hourly_df | safe}}
 
 {% endblock %}
