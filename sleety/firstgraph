@@ -1,0 +1,121 @@
+df1 = df.copy()
+
+# Resample data into 4-hour chunks
+df1.set_index('time', inplace=True)
+df_resampled = df1.resample('4H').sum()
+df_resampled.reset_index(inplace=True)
+
+# Load the image
+img = Image.open('mountains_2.png')
+
+# Create a figure and a 4x1 grid of subplots
+fig = plt.figure(figsize=(18, 10))  # Adjust the size as needed
+gs = fig.add_gridspec(4, hspace=0, height_ratios=[0.5, 1.5, 0.5, 0.5])
+axs = gs.subplots(sharex=True)
+
+# Bar plot for snowfall with adjusted width and black outline on the first subplot
+axs[0].bar(df_resampled['time'], df_resampled['base_snowfall_total'], color='b', edgecolor='black', width=0.2, label='Snowfall (cm)')
+axs[0].set_xlabel('Time')
+axs[0].set_ylabel('Snowfall (cm)', color='b')
+axs[0].tick_params('y', colors='b')
+
+# Create second y-axis for rainfall with adjusted width and black outline on the first subplot
+ax2 = axs[0].twinx()
+ax2.bar(df['time'], df['base_rainfall_total'], color='r', edgecolor='black', width=0.2, label='Rainfall (mm)')
+ax2.set_ylabel('Rainfall (mm)', color='r')
+ax2.tick_params('y', colors='r')
+
+# Plot freezing level on the second (middle) subplot
+axs[1].plot(df['time'], df['freezing_level_height'], marker='o', linestyle='-', label='Freezing Level')
+ax3 = axs[1].twinx()  # Create a second y-axis
+ax3.plot(df['time'], df['temperature_2m'], marker='o', linestyle='-', color='green', label='Temperature 2M')
+axs[1].imshow(img, aspect='auto', extent=[mdates.date2num(df['time'].min()), mdates.date2num(df['time'].max()), 0, 1984], zorder=0)
+axs[1].set_ylabel('Freezing Level Height')
+ax3.set_ylabel('Temperature 2M', color='green')  # Set label for the second y-axis
+for height in [1500, 1700, 1984]:
+    axs[1].axhline(y=height, color='gray', linestyle='--', label=f'{height}m')
+axs[1].legend()
+ax3.legend(loc='upper right')  # Set legend for the second y-axis
+axs[1].set_ylim([0, 2400])
+
+# Assuming 'wind_speed_10m' is the wind speed, 'winddirection_850hPa' is the wind direction
+wind_speed = df['wind_speed_10m']
+wind_dir = df['winddirection_850hPa']
+
+# Convert wind speed and direction to components
+u = wind_speed * np.sin(np.deg2rad(wind_dir))
+v = wind_speed * np.cos(np.deg2rad(wind_dir))
+
+# Create a grid of x (time) and y (height) values
+x = mdates.date2num(df['time'])
+y = np.zeros_like(x)  # Assuming you want the arrows at ground level (height=0)
+
+# Normalize to [0,1]
+norm = mcolors.Normalize(vmin=wind_speed.min(), vmax=wind_speed.max())
+
+# Create a colormap
+cmap = mcolors.LinearSegmentedColormap.from_list("mycmap", ['green', 'yellow', 'orange', 'red'])
+
+# Map wind_speed to a color
+colors = cm.get_cmap(cmap)(norm(wind_speed))
+
+# Add the quiver plot to your existing plot
+axs[2].quiver(x, y, u, v, angles='xy', scale_units='xy', scale=100, color=colors)
+
+# Set x-axis to hourly
+hours = mdates.HourLocator(interval=1)
+h_fmt = mdates.DateFormatter('%H:%M:%S')
+
+for ax in axs:
+    ax.xaxis.set_major_locator(hours)
+    ax.xaxis.set_major_formatter(h_fmt)
+
+# Hide x labels and tick labels for all but bottom plot.
+for ax in axs:
+    ax.label_outer()
+
+import matplotlib.dates as mdates
+import datetime
+
+# Define daylight hours in terms of your time data
+daylight_start_time = datetime.time(8)  # 8 AM
+daylight_end_time = datetime.time(18)  # 6 PM
+
+# For each day in your data
+for date in df['time'].dt.date.unique():
+    # Define daylight hours for this specific day
+    daylight_start = datetime.datetime.combine(date, daylight_start_time)
+    daylight_end = datetime.datetime.combine(date, daylight_end_time)
+
+    # Convert these times to the correct format for matplotlib
+    daylight_start_mdate = mdates.date2num(daylight_start)
+    daylight_end_mdate = mdates.date2num(daylight_end)
+
+    # For each subplot (ax in axs), add a fill_between call for this day
+    for ax in axs:
+        ax.fill_betweenx(ax.get_ylim(), daylight_start_mdate, daylight_end_mdate, color='yellow', alpha=0.05)
+
+# Create a new subplot at the bottom
+ax4 = fig.add_subplot(gs[3, :])
+
+# Get a list of all the image files in the folder, excluding mountains_2.png
+image_files = [f for f in os.listdir('.') if f.endswith('.png') and f != 'mountains_2.png']
+
+# Loop through the temperature values in df1['temperature_2m']
+for idx, temp in enumerate(df_resampled['temperature_2m'].round()):
+    # Find the corresponding image file for the rounded temperature
+    matching_files = [file for file in image_files if str(temp) in file]
+    if matching_files:
+        # Use the first matching file (you can adjust this logic if needed)
+        image_file = matching_files[0]
+        # Load the image
+        img = Image.open(image_file)
+        # Plot the image on the corresponding x-axis position
+        ax4.imshow(img, extent=[mdates.date2num(df_resampled['time'][idx]), mdates.date2num(df_resampled['time'][idx]) + image_width, 0, 1], aspect='auto')
+
+# Set the x-axis limits
+ax4.set_xlim([mdates.date2num(df_resampled['time'].min()), mdates.date2num(df_resampled['time'].max())])  # Adjusted to cover the entire width of the subplot
+# Hide the y-axis
+ax4.get_yaxis().set_visible(False)
+# Set the x-axis label
+ax4.set_xlabel('Temperature (°C)')
